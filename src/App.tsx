@@ -28,6 +28,8 @@ const STATUS_LABELS: Record<ProjectStatus, string> = {
   cancelled: '不拼了',
 }
 
+const DEFAULT_CROP_TOP = 65
+const DEFAULT_CROP_HEIGHT = 35
 const newLine = (): InventoryLine => ({ id: crypto.randomUUID(), code: '', count: '' })
 const normalizeCode = (value: string) => value.toUpperCase().replace(/\s/g, '').replace(/^([A-Z]+)0+(\d+)$/, '$1$2')
 
@@ -42,40 +44,6 @@ function loadImage(url: string) {
     image.onerror = reject
     image.src = url
   })
-}
-
-function findSheetBounds(image: HTMLImageElement): Bounds {
-  const width = Math.min(image.naturalWidth, 640)
-  const height = Math.round(image.naturalHeight * (width / image.naturalWidth))
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-  const context = canvas.getContext('2d', { willReadFrequently: true })!
-  context.drawImage(image, 0, 0, width, height)
-  const pixels = context.getImageData(0, 0, width, height).data
-  const brightRows: number[] = []
-  for (let y = 0; y < height; y += 2) {
-    let bright = 0
-    for (let x = 0; x < width; x += 3) {
-      const i = (y * width + x) * 4
-      if (pixels[i] + pixels[i + 1] + pixels[i + 2] > 130) bright += 1
-    }
-    if (bright / Math.ceil(width / 3) > 0.62) brightRows.push(y)
-  }
-  let start = 0
-  let end = height
-  let longest = 0
-  let runStart = 0
-  let previous = -4
-  for (const row of brightRows) {
-    if (row - previous > 3) runStart = row
-    if (row - runStart > longest) { start = runStart; end = row; longest = row - runStart }
-    previous = row
-  }
-  if (longest < height * 0.2) return { x: 0, y: 0, width: image.naturalWidth, height: image.naturalHeight }
-  const scale = image.naturalWidth / width
-  const top = Math.max(0, start - 4) * scale
-  return { x: 0, y: top, width: image.naturalWidth, height: Math.min(height, end + 5) * scale - top }
 }
 
 function cropImage(image: HTMLImageElement, bounds: Bounds, top: number, height: number) {
@@ -150,8 +118,8 @@ function App() {
   const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [fileName, setFileName] = useState('')
   const [bounds, setBounds] = useState<Bounds | null>(null)
-  const [cropTop, setCropTop] = useState(80)
-  const [cropHeight, setCropHeight] = useState(20)
+  const [cropTop, setCropTop] = useState(DEFAULT_CROP_TOP)
+  const [cropHeight, setCropHeight] = useState(DEFAULT_CROP_HEIGHT)
   const [cropUrl, setCropUrl] = useState<string | null>(null)
   const [progress, setProgress] = useState('')
   const [rows, setRows] = useState<InventoryLine[]>([])
@@ -219,7 +187,9 @@ function App() {
     setOcrText('')
     setProgress('')
     setSaveMessage('')
-    void loadImage(url).then((image) => setBounds(findSheetBounds(image)))
+    setCropTop(DEFAULT_CROP_TOP)
+    setCropHeight(DEFAULT_CROP_HEIGHT)
+    void loadImage(url).then((image) => setBounds({ x: 0, y: 0, width: image.naturalWidth, height: image.naturalHeight }))
   }
 
   async function recognize() {
@@ -334,7 +304,7 @@ function App() {
     {page === 'scan' && <>
       <section className="hero" id="top"><p className="eyebrow">拼豆库存小助手</p><h1>一张图纸，<br /><em>理清所有豆子。</em></h1><p className="hero-copy">读取图纸底部的用量清单，由你确认后保存。新图纸默认进入“打算拼”，不会立刻扣库存。</p></section>
       <section className="workspace" aria-labelledby="upload-title"><div className="section-heading"><div><span className="step">01</span><h2 id="upload-title">放入一张图纸</h2></div><p>JPG、PNG、截图均可</p></div>
-        {!imageUrl ? <button className="drop-zone" type="button" onClick={() => fileInput.current?.click()}><span className="upload-icon" aria-hidden="true">↑</span><strong>选择图纸图片</strong><span>从相册上传，或拖入这里</span><small>识别在本机完成；保存时同步压缩缩略图</small></button> : <div className="scanner"><div className="image-summary"><div><span className="file-label">已选图纸</span><strong>{fileName}</strong></div><button className="text-button" type="button" onClick={() => fileInput.current?.click()}>换一张</button></div><div className="crop-preview">{cropUrl && <img src={cropUrl} alt="将被识别的用量清单区域" />}</div><div className="crop-controls"><div><label htmlFor="top">清单从图纸的哪里开始</label><output>{cropTop}%</output></div><input id="top" type="range" min="60" max="94" value={cropTop} onChange={(event) => { const next = Number(event.target.value); setCropTop(next); setCropHeight((current) => Math.min(current, 100 - next)) }} /><div><label htmlFor="height">清单区域高度</label><output>{cropHeight}%</output></div><input id="height" type="range" min="5" max={100 - cropTop} value={cropHeight} onChange={(event) => setCropHeight(Number(event.target.value))} /></div><button className="primary-button" type="button" onClick={recognize} disabled={!cropUrl || progress.includes('正在')}><span>{progress.includes('正在') ? progress : '读取这块清单'}</span><b>→</b></button></div>}
+        {!imageUrl ? <button className="drop-zone" type="button" onClick={() => fileInput.current?.click()}><span className="upload-icon" aria-hidden="true">↑</span><strong>选择图纸图片</strong><span>从相册上传，或拖入这里</span><small>识别在本机完成；保存时同步压缩缩略图</small></button> : <div className="scanner"><div className="image-summary"><div><span className="file-label">已选图纸</span><strong>{fileName}</strong></div><button className="text-button" type="button" onClick={() => fileInput.current?.click()}>换一张</button></div><div className="crop-preview">{cropUrl && <img src={cropUrl} alt="将被识别的用量清单区域" />}</div><div className="crop-controls"><div><label htmlFor="top">清单从原图的哪里开始</label><output>{cropTop}%</output></div><input id="top" type="range" min="0" max="95" value={cropTop} onChange={(event) => { const next = Number(event.target.value); setCropTop(next); setCropHeight((current) => Math.min(current, 100 - next)) }} /><div><label htmlFor="height">清单区域高度</label><output>{cropHeight}%</output></div><input id="height" type="range" min="5" max={100 - cropTop} value={cropHeight} onChange={(event) => setCropHeight(Number(event.target.value))} /></div><button className="primary-button" type="button" onClick={recognize} disabled={!cropUrl || progress.includes('正在')}><span>{progress.includes('正在') ? progress : '读取这块清单'}</span><b>→</b></button></div>}
         <input ref={fileInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => handleFile(event.target.files?.[0])} />
       </section>
       {imageUrl && <section className="review" aria-labelledby="review-title"><div className="section-heading compact"><div><span className="step">02</span><h2 id="review-title">确认盘点结果</h2></div><p>{progress || '调好区域后开始识别'}</p></div>{rows.length > 0 && <><label className="project-name">图纸名称<input value={projectName} onChange={(event) => setProjectName(event.target.value)} /></label><div className="table-head"><span>标准色号</span><span>颗数</span><span></span></div><div className="inventory-table">{rows.map((row) => <div className="inventory-row" key={row.id}><input aria-label="色号" value={row.code} placeholder="例如 C20" onChange={(event) => updateRow(row.id, 'code', event.target.value)} /><input aria-label="颗数" inputMode="numeric" value={row.count} placeholder="数量" onChange={(event) => updateRow(row.id, 'count', event.target.value)} /><button type="button" aria-label={`删除 ${row.code || '该项'}`} onClick={() => setRows((current) => current.filter((item) => item.id !== row.id))}>×</button></div>)}</div><button type="button" className="add-row" onClick={() => setRows((current) => [...current, newLine()])}>+ 补一项</button><div className="total-check"><label>图纸总计 <input inputMode="numeric" value={total} placeholder="例如 192" onChange={(event) => setTotal(event.target.value.replace(/\D/g, ''))} /> 颗</label><strong>已录入 {sum} 颗</strong>{total && delta !== 0 && <p>相差 <b>{Math.abs(delta)}</b> 颗：可能有一项被水印遮住。</p>}{total && delta === 0 && <p className="good">总计一致，可以保存。</p>}</div>{session ? <div className="save-panel"><button className="primary-button" type="button" onClick={saveProject}>保存为“打算拼” <b>→</b></button>{saveMessage && <p>{saveMessage}</p>}</div> : <p className="save-hint">登录后才能保存到“我的图纸”。</p>}</>}{ocrText && <details><summary>查看原始 OCR 文本</summary><pre>{ocrText}</pre></details>}</section>}
