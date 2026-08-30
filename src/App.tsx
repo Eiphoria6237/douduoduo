@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { createWorker } from 'tesseract.js'
+import { createWorker, PSM } from 'tesseract.js'
 import { MARD_COLOR_BY_CODE, MARD_COLORS } from './data/mardColors'
 import { supabase } from './lib/supabase'
 import './App.css'
@@ -21,6 +21,7 @@ type SavedProject = {
 }
 type InventoryRecord = { code: string; quantity: number }
 type Page = 'scan' | 'inventory' | 'projects'
+type OcrWord = { text: string; x: number; y: number }
 
 const STATUS_LABELS: Record<ProjectStatus, string> = {
   planned: '打算拼',
@@ -78,19 +79,49 @@ async function createThumbnail(file: File) {
   }
 }
 
-function parseOcrText(text: string) {
+function recognizedMardCode(value: string) {
+  const code = normalizeCode(value.replace(/[^A-Z0-9]/gi, ''))
+  return MARD_COLOR_BY_CODE.has(code) ? code : ''
+}
+
+function inventoryLines(pairs: Array<[string, string]>) {
+  const merged = new Map<string, number>()
+  pairs.forEach(([code, count]) => {
+    const quantity = Number(count)
+    if (code && Number.isInteger(quantity) && quantity >= 0) merged.set(code, (merged.get(code) ?? 0) + quantity)
+  })
+  return [...merged].map(([code, count]) => ({ id: crypto.randomUUID(), code, count: String(count) }))
+}
+
+function extractOcrWords(blocks: Array<{ paragraphs: Array<{ lines: Array<{ words: Array<{ text: string; bbox: { x0: number; y0: number; x1: number } }> }> }> }> | null): OcrWord[] {
+  return blocks?.flatMap((block) => block.paragraphs.flatMap((paragraph) => paragraph.lines.flatMap((line) => line.words.map((word) => ({ text: word.text, x: (word.bbox.x0 + word.bbox.x1) / 2, y: word.bbox.y0 }))))) ?? []
+}
+
+function parseOcrText(text: string, words: OcrWord[] = []) {
+  const positionedCodes = words.map((word) => ({ ...word, code: recognizedMardCode(word.text) })).filter((word) => word.code)
+  const positionedCounts = words.filter((word) => /^\d{1,4}$/.test(word.text.trim()))
+  if (positionedCodes.length > 1 && positionedCodes.length === positionedCounts.length) {
+    const codes = [...positionedCodes].sort((a, b) => a.x - b.x)
+    const counts = [...positionedCounts].sort((a, b) => a.x - b.x)
+    if (Math.min(...counts.map((count) => count.y)) > Math.max(...codes.map((code) => code.y))) return inventoryLines(codes.map((code, index) => [code.code, counts[index].text]))
+  }
+
   const pieces = text.toUpperCase().replace(/[|]/g, ' ').match(/[A-Z]{1,2}\s*\d{1,2}|(?<![A-Z0-9])\d{1,4}(?![A-Z0-9])/g) ?? []
-  const lines: InventoryLine[] = []
+  const codes = pieces.map(recognizedMardCode).filter(Boolean)
+  const counts = pieces.filter((piece) => /^\d{1,4}$/.test(piece))
+  if (codes.length > 1 && codes.length === counts.length) return inventoryLines(codes.map((code, index) => [code, counts[index]]))
+
+  const pairs: Array<[string, string]> = []
   let code = ''
   for (const piece of pieces) {
-    const compact = piece.replace(/\s/g, '')
-    if (/^[A-Z]{1,2}\d{1,2}$/.test(compact)) code = compact
-    else if (code && /^\d{1,4}$/.test(compact)) {
-      lines.push({ id: crypto.randomUUID(), code, count: compact })
+    const recognized = recognizedMardCode(piece)
+    if (recognized) code = recognized
+    else if (code && /^\d{1,4}$/.test(piece)) {
+      pairs.push([code, piece])
       code = ''
     }
   }
-  return lines.filter((line, index, all) => all.findIndex((candidate) => normalizeCode(candidate.code) === normalizeCode(line.code)) === index)
+  return inventoryLines(pairs)
 }
 
 function AuthPanel({ email, message, onEmail, onSend }: { email: string; message: string; onEmail: (value: string) => void; onSend: () => void }) {
@@ -197,10 +228,10 @@ function App() {
     setProgress('正在加载本地识别器…')
     try {
       const worker = await createWorker('eng', 1, { logger: (message) => { if (message.status === 'recognizing text') setProgress(`正在读取清单… ${Math.round(message.progress * 100)}%`) } })
-      await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789()[] ' })
-      const { data } = await worker.recognize(cropUrl)
+      await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789()[] ', tessedit_pageseg_mode: PSM.SPARSE_TEXT, preserve_interword_spaces: '1' })
+      const { data } = await worker.recognize(cropUrl, {}, { text: true, blocks: true })
       await worker.terminate()
-      const recognized = parseOcrText(data.text)
+      const recognized = parseOcrText(data.text, extractOcrWords(data.blocks))
       setOcrText(data.text)
       setRows(recognized.length ? recognized : [newLine()])
       setProgress(recognized.length ? `已读出 ${recognized.length} 种颜色，请逐项确认。` : '没有可靠读出结果，请在下方手动补录。')
