@@ -133,9 +133,21 @@ async function detectLegendSwatches(url: string): Promise<LegendSwatch[]> {
     if (row) row.push(component)
     else rows.push([component])
   })
-  const candidateRows = rows.filter((row) => row.length >= 2 && row.length <= 40)
+  const candidateRows = rows.filter((row) => row.length >= 2 && row.length <= 40).map((row) => {
+    const widths = row.map((item) => item.x1 - item.x0 + 1).sort((a, b) => a - b)
+    const heights = row.map((item) => item.y1 - item.y0 + 1).sort((a, b) => a - b)
+    const medianWidth = widths[Math.floor(widths.length / 2)]
+    const medianHeight = heights[Math.floor(heights.length / 2)]
+    return row.filter((item) => {
+      const itemWidth = item.x1 - item.x0 + 1
+      const itemHeight = item.y1 - item.y0 + 1
+      return itemWidth >= medianWidth * 0.55 && itemWidth <= medianWidth * 1.75 && itemHeight >= medianHeight * 0.55 && itemHeight <= medianHeight * 1.75
+    })
+  }).filter((row) => row.length >= 2)
   const largestAverageArea = Math.max(0, ...candidateRows.map((row) => row.reduce((sum, item) => sum + item.area, 0) / row.length))
-  const swatchRow = candidateRows.filter((row) => row.reduce((sum, item) => sum + item.area, 0) / row.length >= largestAverageArea * 0.2).sort((a, b) => Math.max(...b.map((item) => item.y1)) - Math.max(...a.map((item) => item.y1)))[0]
+  const swatchRow = candidateRows
+    .filter((row) => row.reduce((sum, item) => sum + item.area, 0) / row.length >= largestAverageArea * 0.2)
+    .sort((a, b) => Math.max(...b.map((item) => item.y1)) - Math.max(...a.map((item) => item.y1)))[0]
   if (!swatchRow) return []
 
   return swatchRow.sort((a, b) => a.x0 - b.x0).map((component) => {
@@ -423,8 +435,8 @@ function App() {
         detailText.push(`数量:${quantityResult.data.text.trim() || '?'}`)
       }
       await worker.terminate()
-      const parsed = parseOcrText(result.data.text, swatches.length > 1 ? [...swatchCodes, ...quantityWords] : extractOcrWords(result.data.blocks))
-      const recognized = parsed.length || swatchCodes.length < 2 ? parsed : assistedLines(swatchCodes, quantityWords)
+      const parsed = parseOcrText(result.data.text, extractOcrWords(result.data.blocks))
+      const recognized = swatchCodes.length > 1 ? assistedLines(swatchCodes, quantityWords) : parsed
       setOcrText(`${result.data.text}\n逐项识别：${detailText.join(' / ') || '无'}\n色块检测：${swatches.map((swatch) => swatch.text).join('、') || '无'}`)
       setRows(recognized.length ? recognized : [newLine()])
       setProgress(recognized.length ? `已读出 ${recognized.length} 种颜色，请逐项确认。` : '没有可靠读出结果，请在下方手动补录。')
