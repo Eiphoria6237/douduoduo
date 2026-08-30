@@ -1,0 +1,11 @@
+{
+  "name": "豆多多 - 拼豆库存小助手",
+  "short_name": "豆多多",
+  "description": "读取拼豆图纸用量清单，管理自己的拼豆库存。",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f1e7",
+  "theme_color": "#f6f1e7",
+  "icons": [{ "src": "/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
