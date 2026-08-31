@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { createWorker, PSM } from 'tesseract.js'
+import ReactCrop, { type PercentCrop } from 'react-image-crop'
 import { MARD_COLOR_BY_CODE, MARD_COLORS } from './data/mardColors'
 import { supabase } from './lib/supabase'
+import 'react-image-crop/dist/ReactCrop.css'
 import './App.css'
 
-type Bounds = { x: number; y: number; width: number; height: number }
 type InventoryLine = { id: string; code: string; count: string }
 type ProjectStatus = 'planned' | 'completed' | 'cancelled'
 type ProjectItem = { code: string; count: number }
@@ -30,10 +31,26 @@ const STATUS_LABELS: Record<ProjectStatus, string> = {
   cancelled: '不拼了',
 }
 
-const DEFAULT_CROP_TOP = 65
-const DEFAULT_CROP_HEIGHT = 35
+const DEFAULT_CROP: PercentCrop = { unit: '%', x: 4, y: 68, width: 92, height: 28 }
 const newLine = (): InventoryLine => ({ id: crypto.randomUUID(), code: '', count: '' })
 const normalizeCode = (value: string) => value.toUpperCase().replace(/\s/g, '').replace(/^([A-Z]+)0+(\d+)$/, '$1$2')
+
+function sortedInventoryCodes(inventory: InventoryRecord[], projects: SavedProject[]) {
+  const completed = new Map<string, number>()
+  const pending = new Map<string, number>()
+  projects.forEach((project) => project.bead_project_items.forEach((item) => {
+    const code = normalizeCode(item.code)
+    if (project.status === 'completed') completed.set(code, (completed.get(code) ?? 0) + item.count)
+    if (project.status === 'planned') pending.set(code, (pending.get(code) ?? 0) + item.count)
+  }))
+  return [...inventory].sort((a, b) => {
+    const aRemaining = a.quantity - (completed.get(a.code) ?? 0)
+    const bRemaining = b.quantity - (completed.get(b.code) ?? 0)
+    const aAfterPending = aRemaining - (pending.get(a.code) ?? 0)
+    const bAfterPending = bRemaining - (pending.get(b.code) ?? 0)
+    return aRemaining - bRemaining || aAfterPending - bAfterPending || a.code.localeCompare(b.code, undefined, { numeric: true })
+  }).map((item) => item.code)
+}
 
 function BeadMark() {
   return <div className="bead-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
@@ -48,17 +65,21 @@ function loadImage(url: string) {
   })
 }
 
-function cropImage(image: HTMLImageElement, bounds: Bounds, top: number, height: number) {
-  const y = bounds.y + bounds.height * top / 100
-  const cropHeight = bounds.height * height / 100
+function cropImage(image: HTMLImageElement, crop: PercentCrop) {
+  const bounds = {
+    x: image.naturalWidth * crop.x / 100,
+    y: image.naturalHeight * crop.y / 100,
+    width: image.naturalWidth * crop.width / 100,
+    height: image.naturalHeight * crop.height / 100,
+  }
   const scale = Math.min(4, 2600 / bounds.width)
   const canvas = document.createElement('canvas')
   canvas.width = Math.round(bounds.width * scale)
-  canvas.height = Math.round(cropHeight * scale)
+  canvas.height = Math.round(bounds.height * scale)
   const context = canvas.getContext('2d')!
   context.fillStyle = '#fff'
   context.fillRect(0, 0, canvas.width, canvas.height)
-  context.drawImage(image, bounds.x, y, bounds.width, cropHeight, 0, 0, canvas.width, canvas.height)
+  context.drawImage(image, bounds.x, bounds.y, bounds.width, bounds.height, 0, 0, canvas.width, canvas.height)
   return canvas.toDataURL('image/png')
 }
 
@@ -312,15 +333,15 @@ function App() {
   const [authMessage, setAuthMessage] = useState('')
   const [projects, setProjects] = useState<SavedProject[]>([])
   const [inventory, setInventory] = useState<InventoryRecord[]>([])
+  const [inventoryOrder, setInventoryOrder] = useState<string[]>([])
   const [inventorySearch, setInventorySearch] = useState('')
   const [cloudMessage, setCloudMessage] = useState('')
 
   const [sourceFile, setSourceFile] = useState<File | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [fileName, setFileName] = useState('')
-  const [bounds, setBounds] = useState<Bounds | null>(null)
-  const [cropTop, setCropTop] = useState(DEFAULT_CROP_TOP)
-  const [cropHeight, setCropHeight] = useState(DEFAULT_CROP_HEIGHT)
+  const [cropSelection, setCropSelection] = useState<PercentCrop>(DEFAULT_CROP)
+  const [isCropping, setIsCropping] = useState(false)
   const [cropUrl, setCropUrl] = useState<string | null>(null)
   const [progress, setProgress] = useState('')
   const [rows, setRows] = useState<InventoryLine[]>([])
@@ -345,24 +366,28 @@ function App() {
   }
 
   async function loadInventory(userId: string) {
-    if (!supabase) return false
+    if (!supabase) return null
     const { data, error } = await supabase.from('user_inventory').select('code,quantity')
-    if (error) { setCloudMessage(`库存读取失败：${error.message}`); return false }
+    if (error) { setCloudMessage(`库存读取失败：${error.message}`); return null }
     const existing = new Map((data ?? []).map((row) => [normalizeCode(row.code), Number(row.quantity)]))
     const missing = MARD_COLORS.filter((color) => !existing.has(color.code)).map((color) => ({ user_id: userId, code: color.code, quantity: 1000 }))
     if (missing.length) {
       const { error: insertError } = await supabase.from('user_inventory').insert(missing)
-      if (insertError) { setCloudMessage(`豆仓初始化失败：${insertError.message}`); return false }
+      if (insertError) { setCloudMessage(`豆仓初始化失败：${insertError.message}`); return null }
       missing.forEach((row) => existing.set(row.code, row.quantity))
     }
-    setInventory(MARD_COLORS.map((color) => ({ code: color.code, quantity: existing.get(color.code) ?? 1000 })))
-    return true
+    const loaded = MARD_COLORS.map((color) => ({ code: color.code, quantity: existing.get(color.code) ?? 1000 }))
+    setInventory(loaded)
+    return loaded
   }
 
   async function loadCloudData(activeSession: Session) {
     setCloudMessage('正在同步豆仓…')
     const [loadedProjects, loadedInventory] = await Promise.all([loadProjects(), loadInventory(activeSession.user.id)])
-    if (loadedProjects && loadedInventory) setCloudMessage('')
+    if (loadedProjects && loadedInventory) {
+      setInventoryOrder(sortedInventoryCodes(loadedInventory, loadedProjects))
+      setCloudMessage('')
+    }
   }
 
   useEffect(() => {
@@ -373,7 +398,6 @@ function App() {
   }, [])
 
   useEffect(() => { if (session) void loadCloudData(session) }, [session])
-  useEffect(() => { if (imageUrl && bounds) void loadImage(imageUrl).then((image) => setCropUrl(cropImage(image, bounds, cropTop, cropHeight))) }, [bounds, cropHeight, cropTop, imageUrl])
 
   function handleFile(file?: File) {
     if (!file || !file.type.startsWith('image/')) return
@@ -381,6 +405,9 @@ function App() {
     const url = URL.createObjectURL(file)
     setSourceFile(file)
     setImageUrl(url)
+    setCropUrl(null)
+    setCropSelection(DEFAULT_CROP)
+    setIsCropping(true)
     setFileName(file.name)
     setProjectName(file.name.replace(/\.[^.]+$/, ''))
     setRows([])
@@ -388,9 +415,16 @@ function App() {
     setOcrText('')
     setProgress('')
     setSaveMessage('')
-    setCropTop(DEFAULT_CROP_TOP)
-    setCropHeight(DEFAULT_CROP_HEIGHT)
-    void loadImage(url).then((image) => setBounds({ x: 0, y: 0, width: image.naturalWidth, height: image.naturalHeight }))
+  }
+
+  async function confirmCrop() {
+    if (!imageUrl || cropSelection.width < 2 || cropSelection.height < 2) return
+    const image = await loadImage(imageUrl)
+    setCropUrl(cropImage(image, cropSelection))
+    setIsCropping(false)
+    setRows([])
+    setOcrText('')
+    setProgress('清单范围已确认，可以开始识别。')
   }
 
   async function recognize() {
@@ -517,11 +551,15 @@ function App() {
     if (project.status === 'completed') completedUsage.set(code, (completedUsage.get(code) ?? 0) + item.count)
     if (project.status === 'planned') pendingUsage.set(code, (pendingUsage.get(code) ?? 0) + item.count)
   }))
-  const inventoryRows = inventory.map((item) => {
+  const inventoryValues = inventory.map((item) => {
     const remaining = item.quantity - (completedUsage.get(item.code) ?? 0)
     const pending = pendingUsage.get(item.code) ?? 0
     return { ...item, remaining, pending, afterPending: remaining - pending, color: MARD_COLOR_BY_CODE.get(item.code) }
-  }).filter((item) => item.code.includes(normalizeCode(inventorySearch))).sort((a, b) => a.remaining - b.remaining || a.afterPending - b.afterPending || a.code.localeCompare(b.code, undefined, { numeric: true }))
+  })
+  const inventoryOrderIndex = new Map(inventoryOrder.map((code, index) => [code, index]))
+  const inventoryRows = inventoryValues
+    .filter((item) => item.code.includes(normalizeCode(inventorySearch)))
+    .sort((a, b) => (inventoryOrderIndex.get(a.code) ?? 0) - (inventoryOrderIndex.get(b.code) ?? 0))
 
   return <main className="app-shell">
     <header className="site-header">
@@ -542,10 +580,15 @@ function App() {
       <section className="workspace" aria-labelledby="upload-title"><div className="section-heading"><div><span className="step">01</span><h2 id="upload-title">放入一张图纸</h2></div><p>JPG、PNG、截图均可</p></div>
         {!imageUrl ? <button className="drop-zone" type="button" onClick={() => fileInput.current?.click()}><span className="upload-icon" aria-hidden="true">↑</span><strong>选择图纸图片</strong><span>从相册上传，或拖入这里</span><small>识别在本机完成；保存时同步压缩缩略图</small></button> : <div className="scanner">
           <div className="image-summary"><div><span className="file-label">已选图纸</span><strong>{fileName}</strong></div><button className="text-button" type="button" onClick={() => fileInput.current?.click()}>换一张</button></div>
-          <div className="crop-preview">{cropUrl && <img src={cropUrl} alt="将被识别的用量清单区域" />}</div>
-          <div className="crop-controls"><div><label htmlFor="top">清单从原图的哪里开始</label><output>{cropTop}%</output></div><input id="top" type="range" min="0" max="95" value={cropTop} onChange={(event) => { const next = Number(event.target.value); setCropTop(next); setCropHeight((current) => Math.min(current, 100 - next)) }} /><div><label htmlFor="height">清单区域高度</label><output>{cropHeight}%</output></div><input id="height" type="range" min="5" max={100 - cropTop} value={cropHeight} onChange={(event) => setCropHeight(Number(event.target.value))} /></div>
-          <div style={{ display: 'flex', gap: 14, margin: '0 2px 14px' }}><button className="text-button" type="button" onClick={() => { setCropTop(88); setCropHeight(12) }}>只看底部图例</button><button className="text-button" type="button" onClick={() => { setCropTop(DEFAULT_CROP_TOP); setCropHeight(DEFAULT_CROP_HEIGHT) }}>底部宽范围</button></div>
-          <button className="primary-button" type="button" onClick={recognize} disabled={!cropUrl || progress.includes('正在')}><span>{progress.includes('正在') ? progress : '读取这块清单'}</span><b>→</b></button>
+          {isCropping ? <>
+            <div className="crop-instruction"><strong>圈出整块用量清单</strong><span>拖动选框，拉动边角调整大小，左右色号都要包进去。</span></div>
+            <div className="crop-stage"><ReactCrop crop={cropSelection} onChange={(_pixelCrop, percentCrop) => setCropSelection(percentCrop)} minWidth={40} minHeight={24} keepSelection ruleOfThirds><img src={imageUrl} alt="请裁出用量清单" /></ReactCrop></div>
+            <button className="primary-button" type="button" onClick={() => void confirmCrop()}><span>确认清单范围</span><b>✓</b></button>
+          </> : <>
+            <div className="crop-preview">{cropUrl && <img src={cropUrl} alt="将被识别的用量清单区域" />}</div>
+            <div className="crop-ready"><span>识别只使用上方清单；保存时仍使用完整原图作为缩略图。</span><button className="text-button" type="button" onClick={() => setIsCropping(true)}>重新裁切</button></div>
+            <button className="primary-button" type="button" onClick={recognize} disabled={!cropUrl || progress.includes('正在')}><span>{progress.includes('正在') ? progress : '读取这块清单'}</span><b>→</b></button>
+          </>}
         </div>}
         <input ref={fileInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => handleFile(event.target.files?.[0])} />
       </section>
@@ -555,7 +598,7 @@ function App() {
 
     {page === 'inventory' && <section className="page-view">
       <div className="page-title"><div><p className="eyebrow">221 色标准豆仓</p><h1>我的豆仓</h1></div><div className="big-count">{inventory.length}<small>色</small></div></div>
-      {!session ? <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} /> : <><div className="inventory-legend"><span><i className="solid"></i>实际剩余</span><span><i className="outline"></i>扣除 pending 后</span></div><label className="search-box"><span>⌕</span><input value={inventorySearch} placeholder="搜索色号，例如 A17" onChange={(event) => setInventorySearch(event.target.value)} /></label><div className="stock-list">{inventoryRows.map((item) => <article className={`stock-row ${item.afterPending < 0 ? 'shortage' : ''}`} key={item.code}><span className="color-swatch" style={{ background: item.color?.hex }}></span><div className="stock-code"><strong>{item.code}</strong><small>{item.pending ? `pending ${item.pending}` : '暂无 pending'}</small></div><div className="stock-balance"><strong>{item.remaining}</strong><small>之后 {item.afterPending}</small></div><div className="stock-controls"><button type="button" onClick={() => void setInventoryQuantity(item.code, item.quantity - 100)}>−100</button><input aria-label={`${item.code}实际库存`} inputMode="numeric" value={item.remaining} onChange={(event) => void setInventoryQuantity(item.code, (Number(event.target.value.replace(/\D/g, '')) || 0) + (completedUsage.get(item.code) ?? 0))} /><button type="button" onClick={() => void setInventoryQuantity(item.code, item.quantity + 100)}>+100</button></div></article>)}</div></>}
+      {!session ? <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} /> : <><div className="inventory-legend"><span><i className="solid"></i>实际剩余</span><span><i className="outline"></i>扣除 pending 后</span></div><label className="search-box"><span>⌕</span><input value={inventorySearch} placeholder="搜索色号，例如 A17" onChange={(event) => setInventorySearch(event.target.value)} /></label><div className="stock-list">{inventoryRows.map((item) => <article className={`stock-row ${item.afterPending < 0 ? 'shortage' : ''}`} key={item.code}><span className="color-swatch" style={{ background: item.color?.hex }}></span><div className="stock-code"><strong>{item.code}</strong><small>{item.pending ? `pending ${item.pending}` : '暂无 pending'}</small></div><div className="stock-balance"><strong>{item.remaining}</strong><small>之后 {item.afterPending}</small></div><div className="stock-controls"><button type="button" onClick={() => void setInventoryQuantity(item.code, item.quantity - 1000)}>−1000</button><input aria-label={`${item.code}实际库存`} inputMode="numeric" value={item.remaining} onChange={(event) => void setInventoryQuantity(item.code, (Number(event.target.value.replace(/\D/g, '')) || 0) + (completedUsage.get(item.code) ?? 0))} /><button type="button" onClick={() => void setInventoryQuantity(item.code, item.quantity + 1000)}>+1000</button></div></article>)}</div></>}
     </section>}
 
     {page === 'projects' && <section className="page-view">
