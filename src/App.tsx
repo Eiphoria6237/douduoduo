@@ -170,10 +170,12 @@ async function detectLegendSwatches(url: string): Promise<LegendSwatch[]> {
     if (scoreLine(line) < maximumScore * 0.55 || selectedLines.some((selected) => Math.abs(selected.y - line.y) < minimumRowDistance)) return
     selectedLines.push(line)
   })
-  const halfHeight = Math.max(4, Math.floor(minimumRowDistance * 0.45))
-  const scannedComponents = selectedLines.sort((first, second) => first.y - second.y).flatMap((line) => line.runs.flatMap((run) => {
-    const y0 = Math.max(0, line.y - halfHeight)
-    const y1 = Math.min(height - 1, line.y + halfHeight)
+  const orderedLines = selectedLines.sort((first, second) => first.y - second.y)
+  const rowDistances = orderedLines.slice(1).map((line, index) => line.y - orderedLines[index].y).sort((a, b) => a - b)
+  const rowHeight = Math.max(6, (rowDistances[Math.floor(rowDistances.length / 2)] ?? minimumRowDistance) - 2)
+  const scannedComponents = orderedLines.flatMap((line) => line.runs.flatMap((run) => {
+    const y0 = Math.max(0, line.y - 1)
+    const y1 = Math.min(height - 1, line.y + rowHeight)
     let area = 0
     for (let y = y0; y <= y1; y += 1) for (let x = run.x0; x <= run.x1; x += 1) area += mask[y * width + x]
     const coverage = area / ((run.x1 - run.x0 + 1) * (y1 - y0 + 1))
@@ -212,8 +214,33 @@ async function detectLegendSwatches(url: string): Promise<LegendSwatch[]> {
     .filter((row) => row.reduce((sum, item) => sum + item.area, 0) / row.length >= largestAverageArea * 0.2)
     .sort((a, b) => Math.min(...a.map((item) => item.y0)) - Math.min(...b.map((item) => item.y0)))
   if (!swatchRows.length) return []
+  const centerDistances = swatchRows.flatMap((row) => {
+    const ordered = [...row].sort((a, b) => a.x0 - b.x0)
+    return ordered.slice(1).map((item, index) => {
+      const previous = ordered[index]
+      return (item.x0 + item.x1 - previous.x0 - previous.x1) / 2
+    })
+  }).sort((a, b) => a - b)
+  const columnPitch = centerDistances[Math.floor(centerDistances.length * 0.4)] ?? 0
+  const completedRows = swatchRows.map((row) => {
+    const sorted = [...row].sort((a, b) => a.x0 - b.x0)
+    if (!columnPitch || sorted.length < 3) return sorted
+    const completed: typeof sorted = []
+    sorted.forEach((component, index) => {
+      completed.push(component)
+      const next = sorted[index + 1]
+      if (!next) return
+      const center = (component.x0 + component.x1) / 2
+      const nextCenter = (next.x0 + next.x1) / 2
+      for (let missingCenter = center + columnPitch; missingCenter < nextCenter - columnPitch * 0.55; missingCenter += columnPitch) {
+        const componentWidth = component.x1 - component.x0
+        completed.push({ x0: Math.round(missingCenter - componentWidth / 2), x1: Math.round(missingCenter + componentWidth / 2), y0: component.y0, y1: component.y1, area: component.area })
+      }
+    })
+    return completed.sort((a, b) => a.x0 - b.x0)
+  })
 
-  return swatchRows.flatMap((row) => row.sort((a, b) => a.x0 - b.x0)).map((component) => {
+  return completedRows.flatMap((row) => row).map((component) => {
     const samples: Array<[number, number, number]> = []
     const left = Math.round((component.x0 * 0.7 + component.x1 * 0.3) * step)
     const right = Math.round((component.x0 * 0.3 + component.x1 * 0.7) * step)
@@ -237,30 +264,32 @@ async function detectLegendSwatches(url: string): Promise<LegendSwatch[]> {
   })
 }
 
-function makeOcrTile(image: HTMLImageElement, rectangle: { left: number; top: number; width: number; height: number }, mode: 'swatch' | 'number') {
+function makeOcrTile(image: HTMLImageElement, rectangle: { left: number; top: number; width: number; height: number }, mode: 'swatch' | 'number' | 'raw') {
   const source = document.createElement('canvas')
   source.width = Math.max(1, Math.round(rectangle.width))
   source.height = Math.max(1, Math.round(rectangle.height))
   const sourceContext = source.getContext('2d', { willReadFrequently: true })!
   sourceContext.drawImage(image, rectangle.left, rectangle.top, rectangle.width, rectangle.height, 0, 0, source.width, source.height)
-  const imageData = sourceContext.getImageData(0, 0, source.width, source.height)
-  const pixels = imageData.data
-  const medians = [0, 1, 2].map((channel) => {
-    const values: number[] = []
-    for (let index = channel; index < pixels.length; index += 4) values.push(pixels[index])
-    values.sort((a, b) => a - b)
-    return values[Math.floor(values.length / 2)]
-  })
-  for (let index = 0; index < pixels.length; index += 4) {
-    const isInk = mode === 'swatch'
-      ? Math.sqrt((pixels[index] - medians[0]) ** 2 + (pixels[index + 1] - medians[1]) ** 2 + (pixels[index + 2] - medians[2]) ** 2) > 42
-      : (pixels[index] + pixels[index + 1] + pixels[index + 2]) / 3 < 170
-    pixels[index] = isInk ? 0 : 255
-    pixels[index + 1] = isInk ? 0 : 255
-    pixels[index + 2] = isInk ? 0 : 255
-    pixels[index + 3] = 255
+  if (mode !== 'raw') {
+    const imageData = sourceContext.getImageData(0, 0, source.width, source.height)
+    const pixels = imageData.data
+    const medians = [0, 1, 2].map((channel) => {
+      const values: number[] = []
+      for (let index = channel; index < pixels.length; index += 4) values.push(pixels[index])
+      values.sort((a, b) => a - b)
+      return values[Math.floor(values.length / 2)]
+    })
+    for (let index = 0; index < pixels.length; index += 4) {
+      const isInk = mode === 'swatch'
+        ? Math.sqrt((pixels[index] - medians[0]) ** 2 + (pixels[index + 1] - medians[1]) ** 2 + (pixels[index + 2] - medians[2]) ** 2) > 20
+        : (pixels[index] + pixels[index + 1] + pixels[index + 2]) / 3 < 170
+      pixels[index] = isInk ? 0 : 255
+      pixels[index + 1] = isInk ? 0 : 255
+      pixels[index + 2] = isInk ? 0 : 255
+      pixels[index + 3] = 255
+    }
+    sourceContext.putImageData(imageData, 0, 0)
   }
-  sourceContext.putImageData(imageData, 0, 0)
 
   const scale = Math.max(4, Math.ceil(260 / source.width))
   const tile = document.createElement('canvas')
@@ -269,33 +298,20 @@ function makeOcrTile(image: HTMLImageElement, rectangle: { left: number; top: nu
   const tileContext = tile.getContext('2d')!
   tileContext.fillStyle = '#fff'
   tileContext.fillRect(0, 0, tile.width, tile.height)
-  tileContext.imageSmoothingEnabled = false
+  tileContext.imageSmoothingEnabled = true
+  tileContext.imageSmoothingQuality = 'high'
   tileContext.drawImage(source, 0, 0, source.width, source.height, 40, 40, source.width * scale, source.height * scale)
   return tile
 }
 
-function makeLegendContactSheet(image: HTMLImageElement, swatches: LegendSwatch[]) {
-  const columns = Math.min(4, swatches.length)
-  const cellWidth = 380
-  const cellHeight = 140
-  const canvas = document.createElement('canvas')
-  canvas.width = columns * cellWidth
-  canvas.height = Math.ceil(swatches.length / columns) * cellHeight
-  const context = canvas.getContext('2d')!
-  context.fillStyle = '#fff'
-  context.fillRect(0, 0, canvas.width, canvas.height)
-  swatches.forEach((swatch, index) => {
-    const insetX = Math.max(1, Math.round((swatch.x1 - swatch.x0) * 0.04))
-    const insetY = Math.max(1, Math.round((swatch.y1 - swatch.y0) * 0.06))
-    const tile = makeOcrTile(image, { left: swatch.x0 + insetX, top: swatch.y0 + insetY, width: swatch.x1 - swatch.x0 - insetX * 2, height: swatch.y1 - swatch.y0 - insetY * 2 }, 'swatch')
-    const scale = Math.min((cellWidth - 24) / tile.width, (cellHeight - 24) / tile.height, 1)
-    const width = tile.width * scale
-    const height = tile.height * scale
-    const left = (index % columns) * cellWidth + (cellWidth - width) / 2
-    const top = Math.floor(index / columns) * cellHeight + (cellHeight - height) / 2
-    context.drawImage(tile, left, top, width, height)
+function makeLegendFieldTiles(image: HTMLImageElement, swatches: LegendSwatch[], field: 'code' | 'count', mode: 'swatch' | 'raw') {
+  return swatches.map((swatch) => {
+    const width = swatch.x1 - swatch.x0
+    const height = swatch.y1 - swatch.y0
+    const top = swatch.y0 + Math.max(1, height * 0.05)
+    if (field === 'code') return makeOcrTile(image, { left: swatch.x0 + width * 0.02, top, width: width * 0.34, height: height * 0.9 }, mode)
+    return makeOcrTile(image, { left: swatch.x0 + width * 0.42, top, width: width * 0.54, height: height * 0.9 }, mode)
   })
-  return { canvas, columns, cellWidth, cellHeight }
 }
 
 async function createThumbnail(file: File) {
@@ -319,15 +335,6 @@ async function createThumbnail(file: File) {
 function recognizedMardCode(value: string) {
   const code = normalizeCode(value.replace(/[^A-Z0-9]/gi, ''))
   return MARD_COLOR_BY_CODE.has(code) ? code : ''
-}
-
-function parseEmbeddedLegend(value: string) {
-  const compact = value.toUpperCase().replace(/[^A-Z0-9]/g, '')
-  const code = MARD_COLORS
-    .map((color) => color.code)
-    .filter((candidate) => compact.startsWith(candidate) && /^\d{1,4}$/.test(compact.slice(candidate.length)))
-    .sort((first, second) => second.length - first.length)[0]
-  return code ? { code, count: compact.slice(code.length) } : null
 }
 
 function codeFromLegendText(value: string) {
@@ -523,31 +530,50 @@ function App() {
       let embeddedRows: InventoryLine[] = []
       const detailText: string[] = []
       if (swatches.length > 1) {
-        await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789()[] ', tessedit_pageseg_mode: PSM.SPARSE_TEXT })
         swatchCodes = []
         const tileResults: Array<{ swatch: LegendSwatch; code: string; count: string; raw: string }> = []
-        const contactSheet = makeLegendContactSheet(cropImageElement, swatches)
-        const tileResult = await worker.recognize(contactSheet.canvas, {}, { text: true, blocks: true })
-        const tileWords = extractOcrWords(tileResult.data.blocks)
-        swatches.forEach((swatch, index) => {
-          const column = index % contactSheet.columns
-          const row = Math.floor(index / contactSheet.columns)
-          const raw = tileWords
-            .filter((word) => Math.floor(word.x / contactSheet.cellWidth) === column && Math.floor(word.y / contactSheet.cellHeight) === row)
-            .sort((first, second) => first.x - second.x)
-            .map((word) => word.text)
-            .join(' ')
-            .trim()
-          const embedded = parseEmbeddedLegend(raw)
-          const code = embedded?.code || codeFromLegendText(raw) || swatch.text
-          swatchCodes.push({ text: code, x: swatch.x, y: swatch.y })
-          tileResults.push({ swatch, code, count: embedded?.count ?? '', raw })
-          detailText.push(`${raw || '?'}>${code}${embedded ? `(${embedded.count})` : ''}`)
-        })
+        const rawCodeTiles = makeLegendFieldTiles(cropImageElement, swatches, 'code', 'raw')
+        const enhancedCodeTiles = makeLegendFieldTiles(cropImageElement, swatches, 'code', 'swatch')
+        const rawCountTiles = makeLegendFieldTiles(cropImageElement, swatches, 'count', 'raw')
+        const enhancedCountTiles = makeLegendFieldTiles(cropImageElement, swatches, 'count', 'swatch')
+        const wideLegend = swatches.reduce((sum, swatch) => sum + (swatch.x1 - swatch.x0) / Math.max(1, swatch.y1 - swatch.y0), 0) / swatches.length > 2.4
+        await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', tessedit_pageseg_mode: PSM.SINGLE_WORD })
+        const codeResults: Array<{ code: string; raw: string }> = []
+        for (let index = 0; index < swatches.length; index += 1) {
+          const rawResult = await worker.recognize(rawCodeTiles[index], {}, { text: true })
+          let raw = rawResult.data.text.trim()
+          let code = recognizedMardCode(raw) || codeFromLegendText(raw)
+          if (!code) {
+            const enhancedResult = await worker.recognize(enhancedCodeTiles[index], {}, { text: true })
+            const enhanced = enhancedResult.data.text.trim()
+            code = recognizedMardCode(enhanced) || codeFromLegendText(enhanced)
+            raw = [raw, enhanced].filter(Boolean).join(' | ')
+          }
+          codeResults.push({ code, raw })
+        }
+        await worker.setParameters({ tessedit_char_whitelist: '0123456789', tessedit_pageseg_mode: PSM.SINGLE_WORD })
+        const usedCodes = new Set<string>()
+        for (let index = 0; index < swatches.length; index += 1) {
+          const swatch = swatches[index]
+          const rawResult = await worker.recognize(rawCountTiles[index], {}, { text: true })
+          let rawCount = rawResult.data.text.replace(/\D/g, '').slice(0, 4)
+          let count = rawCount
+          if (!count) {
+            const enhancedResult = await worker.recognize(enhancedCountTiles[index], {}, { text: true })
+            rawCount = enhancedResult.data.text.replace(/\D/g, '').slice(0, 4)
+            count = rawCount
+          }
+          let code = codeResults[index].code
+          if (usedCodes.has(code)) code = ''
+          if (code) usedCodes.add(code)
+          if (code) swatchCodes.push({ text: code, x: swatch.x, y: swatch.y })
+          tileResults.push({ swatch, code, count, raw: `${codeResults[index].raw} / ${rawCount}` })
+          detailText.push(`${codeResults[index].raw || '?'} / ${rawCount || '?'}>${code}${count ? `(${count})` : ''}`)
+        }
 
         const embeddedCount = tileResults.filter((item) => item.count).length
-        if (embeddedCount >= 2) {
-          embeddedRows = tileResults.map((item) => ({ id: crypto.randomUUID(), code: item.code, count: item.count }))
+        if (wideLegend || embeddedCount >= 2) {
+          embeddedRows = tileResults.filter((item) => item.code || item.count).map((item) => ({ id: crypto.randomUUID(), code: item.code, count: item.count }))
         } else {
           await worker.setParameters({ tessedit_char_whitelist: '0123456789 ', tessedit_pageseg_mode: PSM.SINGLE_LINE, preserve_interword_spaces: '1' })
           const quantityTop = Math.round(cropImageElement.naturalHeight * 0.5)
