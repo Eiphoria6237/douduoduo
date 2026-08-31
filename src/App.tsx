@@ -144,50 +144,7 @@ async function detectLegendSwatches(url: string): Promise<LegendSwatch[]> {
     const componentWidth = x1 - x0 + 1
     const componentHeight = y1 - y0 + 1
     const coverage = queue.length / (componentWidth * componentHeight)
-    if (componentWidth >= width * 0.018 && componentWidth <= width * 0.18 && componentHeight >= 4 && componentHeight <= height * 0.8 && componentWidth / componentHeight >= 0.45 && componentWidth / componentHeight <= 16 && coverage >= 0.04) components.push({ x0, y0, x1, y1, area: queue.length })
-  }
-  const connectedComponents = [...components]
-
-  const scanLines: Array<{ y: number; runs: Array<{ x0: number; x1: number }> }> = []
-  for (let y = 0; y < height; y += 1) {
-    const runs: Array<{ x0: number; x1: number }> = []
-    let x = 0
-    while (x < width) {
-      while (x < width && !mask[y * width + x]) x += 1
-      const x0 = x
-      while (x < width && mask[y * width + x]) x += 1
-      const runWidth = x - x0
-      if (runWidth >= width * 0.018 && runWidth <= width * 0.18) runs.push({ x0, x1: x - 1 })
-    }
-    if (runs.length >= 2 && runs.length <= 40) scanLines.push({ y, runs })
-  }
-  const scoreLine = (line: (typeof scanLines)[number]) => line.runs.reduce((sum, run) => sum + run.x1 - run.x0 + 1, 0)
-  const minimumRowDistance = Math.max(8, Math.round(height * 0.07))
-  const maximumScore = Math.max(0, ...scanLines.map(scoreLine))
-  const selectedLines: typeof scanLines = []
-  const sortedScanLines = [...scanLines].sort((first, second) => scoreLine(second) - scoreLine(first))
-  sortedScanLines.forEach((line) => {
-    if (scoreLine(line) < maximumScore * 0.55 || selectedLines.some((selected) => Math.abs(selected.y - line.y) < minimumRowDistance)) return
-    selectedLines.push(line)
-  })
-  const orderedLines = selectedLines.sort((first, second) => first.y - second.y)
-  const rowDistances = orderedLines.slice(1).map((line, index) => line.y - orderedLines[index].y).sort((a, b) => a - b)
-  const rowHeight = Math.max(6, (rowDistances[Math.floor(rowDistances.length / 2)] ?? minimumRowDistance) - 2)
-  const scannedComponents = orderedLines.flatMap((line) => line.runs.flatMap((run) => {
-    const y0 = Math.max(0, line.y - 1)
-    const y1 = Math.min(height - 1, line.y + rowHeight)
-    let area = 0
-    for (let y = y0; y <= y1; y += 1) for (let x = run.x0; x <= run.x1; x += 1) area += mask[y * width + x]
-    const coverage = area / ((run.x1 - run.x0 + 1) * (y1 - y0 + 1))
-    return coverage >= 0.32 ? [{ ...run, y0, y1, area }] : []
-  }))
-  if (scannedComponents.length > components.length) {
-    components.splice(0, components.length, ...scannedComponents)
-    connectedComponents.forEach((component) => {
-      const centerX = (component.x0 + component.x1) / 2
-      const centerY = (component.y0 + component.y1) / 2
-      if (!components.some((candidate) => centerX >= candidate.x0 && centerX <= candidate.x1 && centerY >= candidate.y0 && centerY <= candidate.y1)) components.push(component)
-    })
+    if (componentWidth >= width * 0.018 && componentWidth <= width * 0.16 && componentHeight >= 8 && componentHeight <= height * 0.8 && componentWidth / componentHeight >= 0.45 && componentWidth / componentHeight <= 2.3 && coverage >= 0.04) components.push({ x0, y0, x1, y1, area: queue.length })
   }
 
   const rows: typeof components[] = []
@@ -197,8 +154,7 @@ async function detectLegendSwatches(url: string): Promise<LegendSwatch[]> {
     if (row) row.push(component)
     else rows.push([component])
   })
-  const multiRowCenters = rows.filter((row) => row.length >= 2).map((row) => row.reduce((sum, item) => sum + item.y0 + item.y1, 0) / row.length / 2)
-  const candidateRows = rows.filter((row) => row.length >= 2 || (multiRowCenters.length >= 2 && (row[0].y0 + row[0].y1) / 2 > Math.min(...multiRowCenters))).filter((row) => row.length <= 40).map((row) => {
+  const candidateRows = rows.filter((row) => row.length >= 2 && row.length <= 40).map((row) => {
     const widths = row.map((item) => item.x1 - item.x0 + 1).sort((a, b) => a - b)
     const heights = row.map((item) => item.y1 - item.y0 + 1).sort((a, b) => a - b)
     const medianWidth = widths[Math.floor(widths.length / 2)]
@@ -208,39 +164,14 @@ async function detectLegendSwatches(url: string): Promise<LegendSwatch[]> {
       const itemHeight = item.y1 - item.y0 + 1
       return itemWidth >= medianWidth * 0.55 && itemWidth <= medianWidth * 1.75 && itemHeight >= medianHeight * 0.55 && itemHeight <= medianHeight * 1.75
     })
-  }).filter((row) => row.length >= 1)
+  }).filter((row) => row.length >= 2)
   const largestAverageArea = Math.max(0, ...candidateRows.map((row) => row.reduce((sum, item) => sum + item.area, 0) / row.length))
-  const swatchRows = candidateRows
+  const swatchRow = candidateRows
     .filter((row) => row.reduce((sum, item) => sum + item.area, 0) / row.length >= largestAverageArea * 0.2)
-    .sort((a, b) => Math.min(...a.map((item) => item.y0)) - Math.min(...b.map((item) => item.y0)))
-  if (!swatchRows.length) return []
-  const centerDistances = swatchRows.flatMap((row) => {
-    const ordered = [...row].sort((a, b) => a.x0 - b.x0)
-    return ordered.slice(1).map((item, index) => {
-      const previous = ordered[index]
-      return (item.x0 + item.x1 - previous.x0 - previous.x1) / 2
-    })
-  }).sort((a, b) => a - b)
-  const columnPitch = centerDistances[Math.floor(centerDistances.length * 0.4)] ?? 0
-  const completedRows = swatchRows.map((row) => {
-    const sorted = [...row].sort((a, b) => a.x0 - b.x0)
-    if (!columnPitch || sorted.length < 3) return sorted
-    const completed: typeof sorted = []
-    sorted.forEach((component, index) => {
-      completed.push(component)
-      const next = sorted[index + 1]
-      if (!next) return
-      const center = (component.x0 + component.x1) / 2
-      const nextCenter = (next.x0 + next.x1) / 2
-      for (let missingCenter = center + columnPitch; missingCenter < nextCenter - columnPitch * 0.55; missingCenter += columnPitch) {
-        const componentWidth = component.x1 - component.x0
-        completed.push({ x0: Math.round(missingCenter - componentWidth / 2), x1: Math.round(missingCenter + componentWidth / 2), y0: component.y0, y1: component.y1, area: component.area })
-      }
-    })
-    return completed.sort((a, b) => a.x0 - b.x0)
-  })
+    .sort((a, b) => Math.max(...b.map((item) => item.y1)) - Math.max(...a.map((item) => item.y1)))[0]
+  if (!swatchRow) return []
 
-  return completedRows.flatMap((row) => row).map((component) => {
+  return swatchRow.sort((a, b) => a.x0 - b.x0).map((component) => {
     const samples: Array<[number, number, number]> = []
     const left = Math.round((component.x0 * 0.7 + component.x1 * 0.3) * step)
     const right = Math.round((component.x0 * 0.3 + component.x1 * 0.7) * step)
@@ -264,32 +195,30 @@ async function detectLegendSwatches(url: string): Promise<LegendSwatch[]> {
   })
 }
 
-function makeOcrTile(image: HTMLImageElement, rectangle: { left: number; top: number; width: number; height: number }, mode: 'swatch' | 'number' | 'raw') {
+function makeOcrTile(image: HTMLImageElement, rectangle: { left: number; top: number; width: number; height: number }, mode: 'swatch' | 'number') {
   const source = document.createElement('canvas')
   source.width = Math.max(1, Math.round(rectangle.width))
   source.height = Math.max(1, Math.round(rectangle.height))
   const sourceContext = source.getContext('2d', { willReadFrequently: true })!
   sourceContext.drawImage(image, rectangle.left, rectangle.top, rectangle.width, rectangle.height, 0, 0, source.width, source.height)
-  if (mode !== 'raw') {
-    const imageData = sourceContext.getImageData(0, 0, source.width, source.height)
-    const pixels = imageData.data
-    const medians = [0, 1, 2].map((channel) => {
-      const values: number[] = []
-      for (let index = channel; index < pixels.length; index += 4) values.push(pixels[index])
-      values.sort((a, b) => a - b)
-      return values[Math.floor(values.length / 2)]
-    })
-    for (let index = 0; index < pixels.length; index += 4) {
-      const isInk = mode === 'swatch'
-        ? Math.sqrt((pixels[index] - medians[0]) ** 2 + (pixels[index + 1] - medians[1]) ** 2 + (pixels[index + 2] - medians[2]) ** 2) > 20
-        : (pixels[index] + pixels[index + 1] + pixels[index + 2]) / 3 < 170
-      pixels[index] = isInk ? 0 : 255
-      pixels[index + 1] = isInk ? 0 : 255
-      pixels[index + 2] = isInk ? 0 : 255
-      pixels[index + 3] = 255
-    }
-    sourceContext.putImageData(imageData, 0, 0)
+  const imageData = sourceContext.getImageData(0, 0, source.width, source.height)
+  const pixels = imageData.data
+  const medians = [0, 1, 2].map((channel) => {
+    const values: number[] = []
+    for (let index = channel; index < pixels.length; index += 4) values.push(pixels[index])
+    values.sort((a, b) => a - b)
+    return values[Math.floor(values.length / 2)]
+  })
+  for (let index = 0; index < pixels.length; index += 4) {
+    const isInk = mode === 'swatch'
+      ? Math.sqrt((pixels[index] - medians[0]) ** 2 + (pixels[index + 1] - medians[1]) ** 2 + (pixels[index + 2] - medians[2]) ** 2) > 42
+      : (pixels[index] + pixels[index + 1] + pixels[index + 2]) / 3 < 170
+    pixels[index] = isInk ? 0 : 255
+    pixels[index + 1] = isInk ? 0 : 255
+    pixels[index + 2] = isInk ? 0 : 255
+    pixels[index + 3] = 255
   }
+  sourceContext.putImageData(imageData, 0, 0)
 
   const scale = Math.max(4, Math.ceil(260 / source.width))
   const tile = document.createElement('canvas')
@@ -298,18 +227,9 @@ function makeOcrTile(image: HTMLImageElement, rectangle: { left: number; top: nu
   const tileContext = tile.getContext('2d')!
   tileContext.fillStyle = '#fff'
   tileContext.fillRect(0, 0, tile.width, tile.height)
-  tileContext.imageSmoothingEnabled = true
-  tileContext.imageSmoothingQuality = 'high'
+  tileContext.imageSmoothingEnabled = false
   tileContext.drawImage(source, 0, 0, source.width, source.height, 40, 40, source.width * scale, source.height * scale)
-  return tile
-}
-
-function makeLegendFieldTile(image: HTMLImageElement, swatch: LegendSwatch, field: 'code' | 'count', mode: 'swatch' | 'raw') {
-  const width = swatch.x1 - swatch.x0
-  const height = swatch.y1 - swatch.y0
-  const top = swatch.y0 + Math.max(1, height * 0.05)
-  if (field === 'code') return makeOcrTile(image, { left: swatch.x0 + width * 0.02, top, width: width * 0.34, height: height * 0.9 }, mode)
-  return makeOcrTile(image, { left: swatch.x0 + width * 0.42, top, width: width * 0.54, height: height * 0.9 }, mode)
+  return tile.toDataURL('image/png')
 }
 
 async function createThumbnail(file: File) {
@@ -333,11 +253,6 @@ async function createThumbnail(file: File) {
 function recognizedMardCode(value: string) {
   const code = normalizeCode(value.replace(/[^A-Z0-9]/gi, ''))
   return MARD_COLOR_BY_CODE.has(code) ? code : ''
-}
-
-function codeFromLegendText(value: string) {
-  const candidates = value.toUpperCase().match(/[A-Z]{1,2}\s*\d{1,2}/g) ?? []
-  return candidates.map(recognizedMardCode).find(Boolean) ?? ''
 }
 
 function inventoryLines(pairs: Array<[string, string]>) {
@@ -525,75 +440,42 @@ function App() {
       ])
       let swatchCodes: OcrWord[] = swatches
       let quantityWords: OcrWord[] = []
-      let embeddedRows: InventoryLine[] = []
       const detailText: string[] = []
       if (swatches.length > 1) {
-        swatchCodes = []
-        const tileResults: Array<{ swatch: LegendSwatch; code: string; count: string; raw: string }> = []
-        const wideLegend = swatches.reduce((sum, swatch) => sum + (swatch.x1 - swatch.x0) / Math.max(1, swatch.y1 - swatch.y0), 0) / swatches.length > 2.4
         await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', tessedit_pageseg_mode: PSM.SINGLE_WORD })
-        const codeResults: Array<{ code: string; raw: string }> = []
-        for (let index = 0; index < swatches.length; index += 1) {
-          const rawResult = await worker.recognize(makeLegendFieldTile(cropImageElement, swatches[index], 'code', 'raw'), {}, { text: true })
-          let raw = rawResult.data.text.trim()
-          let code = recognizedMardCode(raw) || codeFromLegendText(raw)
-          if (!code) {
-            const enhancedResult = await worker.recognize(makeLegendFieldTile(cropImageElement, swatches[index], 'code', 'swatch'), {}, { text: true })
-            const enhanced = enhancedResult.data.text.trim()
-            code = recognizedMardCode(enhanced) || codeFromLegendText(enhanced)
-            raw = [raw, enhanced].filter(Boolean).join(' | ')
-          }
-          codeResults.push({ code, raw })
-        }
-        await worker.setParameters({ tessedit_char_whitelist: '0123456789', tessedit_pageseg_mode: PSM.SINGLE_WORD })
-        const usedCodes = new Set<string>()
-        for (let index = 0; index < swatches.length; index += 1) {
-          const swatch = swatches[index]
-          const rawResult = await worker.recognize(makeLegendFieldTile(cropImageElement, swatch, 'count', 'raw'), {}, { text: true })
-          let rawCount = rawResult.data.confidence >= 55 ? rawResult.data.text.replace(/\D/g, '').slice(0, 4) : ''
-          let count = rawCount
-          if (!count) {
-            const enhancedResult = await worker.recognize(makeLegendFieldTile(cropImageElement, swatch, 'count', 'swatch'), {}, { text: true })
-            rawCount = enhancedResult.data.confidence >= 55 ? enhancedResult.data.text.replace(/\D/g, '').slice(0, 4) : ''
-            count = rawCount
-          }
-          let code = codeResults[index].code
-          if (usedCodes.has(code)) { code = ''; count = '' }
-          if (code) usedCodes.add(code)
-          if (code) swatchCodes.push({ text: code, x: swatch.x, y: swatch.y })
-          tileResults.push({ swatch, code, count, raw: `${codeResults[index].raw} / ${rawCount}` })
-          detailText.push(`${codeResults[index].raw || '?'} / ${rawCount || '?'}>${code}${count ? `(${count})` : ''}`)
+        swatchCodes = []
+        for (const swatch of swatches) {
+          const insetX = Math.max(1, Math.round((swatch.x1 - swatch.x0) * 0.12))
+          const insetY = Math.max(1, Math.round((swatch.y1 - swatch.y0) * 0.12))
+          const codeTile = makeOcrTile(cropImageElement, { left: swatch.x0 + insetX, top: swatch.y0 + insetY, width: swatch.x1 - swatch.x0 - insetX * 2, height: swatch.y1 - swatch.y0 - insetY * 2 }, 'swatch')
+          const codeResult = await worker.recognize(codeTile, {}, { text: true })
+          const code = recognizedMardCode(codeResult.data.text) || swatch.text
+          swatchCodes.push({ text: code, x: swatch.x, y: swatch.y })
+          detailText.push(`${codeResult.data.text.trim() || '?'}>${code}`)
         }
 
-        const embeddedCount = tileResults.filter((item) => item.count).length
-        if (wideLegend || embeddedCount >= 2) {
-          embeddedRows = tileResults.filter((item) => item.code).map((item) => ({ id: crypto.randomUUID(), code: item.code, count: item.count }))
-        } else {
-          await worker.setParameters({ tessedit_char_whitelist: '0123456789 ', tessedit_pageseg_mode: PSM.SINGLE_LINE, preserve_interword_spaces: '1' })
-          const quantityTop = Math.round(cropImageElement.naturalHeight * 0.5)
-          const quantityResult = await worker.recognize(cropUrl, { rectangle: { left: 0, top: quantityTop, width: cropImageElement.naturalWidth, height: cropImageElement.naturalHeight - quantityTop } }, { text: true, blocks: true })
-          const candidates = [
-            ...extractOcrWords(quantityResult.data.blocks),
-            ...extractOcrWords(result.data.blocks).filter((word) => word.y >= quantityTop),
-          ].filter((word) => /^\d{1,4}$/.test(word.text.trim()))
-          quantityWords = swatches.flatMap((swatch) => {
-            const nearby = candidates.filter((candidate) => swatches.reduce((closest, other) => Math.abs(candidate.x - other.x) < Math.abs(candidate.x - closest.x) ? other : closest) === swatch)
-            const best = nearby.sort((a, b) => b.text.trim().length - a.text.trim().length)[0]
-            return best ? [{ text: best.text.trim(), x: swatch.x, y: quantityTop + 30 }] : []
-          })
-          detailText.push(`数量:${quantityResult.data.text.trim() || '?'}`)
-        }
+        await worker.setParameters({ tessedit_char_whitelist: '0123456789 ', tessedit_pageseg_mode: PSM.SINGLE_LINE, preserve_interword_spaces: '1' })
+        const quantityTop = Math.round(cropImageElement.naturalHeight * 0.5)
+        const quantityResult = await worker.recognize(cropUrl, { rectangle: { left: 0, top: quantityTop, width: cropImageElement.naturalWidth, height: cropImageElement.naturalHeight - quantityTop } }, { text: true, blocks: true })
+        const candidates = [
+          ...extractOcrWords(quantityResult.data.blocks),
+          ...extractOcrWords(result.data.blocks).filter((word) => word.y >= quantityTop),
+        ].filter((word) => /^\d{1,4}$/.test(word.text.trim()))
+        quantityWords = swatches.flatMap((swatch) => {
+          const nearby = candidates.filter((candidate) => swatches.reduce((closest, other) => Math.abs(candidate.x - other.x) < Math.abs(candidate.x - closest.x) ? other : closest) === swatch)
+          const best = nearby.sort((a, b) => b.text.trim().length - a.text.trim().length)[0]
+          return best ? [{ text: best.text.trim(), x: swatch.x, y: quantityTop + 30 }] : []
+        })
+        detailText.push(`数量:${quantityResult.data.text.trim() || '?'}`)
       }
       await worker.terminate()
       const parsed = parseOcrText(result.data.text, extractOcrWords(result.data.blocks))
-      const recognized = embeddedRows.length ? embeddedRows : swatchCodes.length > 1 ? assistedLines(swatchCodes, quantityWords) : parsed
+      const recognized = swatchCodes.length > 1 ? assistedLines(swatchCodes, quantityWords) : parsed
       setOcrText(`${result.data.text}\n逐项识别：${detailText.join(' / ') || '无'}\n色块检测：${swatches.map((swatch) => swatch.text).join('、') || '无'}`)
       setRows(recognized.length ? recognized : [newLine()])
       setProgress(recognized.length ? `已读出 ${recognized.length} 种颜色，请逐项确认。` : '没有可靠读出结果，请在下方手动补录。')
-    } catch (error) {
-      console.error(error)
-      const message = error instanceof Error ? error.message : '未知错误'
-      setProgress(`识别失败：${message}`)
+    } catch {
+      setProgress('识别器未能启动，请检查网络后重试。')
     }
   }
 
