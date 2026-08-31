@@ -550,15 +550,15 @@ function App() {
         for (let index = 0; index < swatches.length; index += 1) {
           const swatch = swatches[index]
           const rawResult = await worker.recognize(makeLegendFieldTile(cropImageElement, swatch, 'count', 'raw'), {}, { text: true })
-          let rawCount = rawResult.data.text.replace(/\D/g, '').slice(0, 4)
+          let rawCount = rawResult.data.confidence >= 55 ? rawResult.data.text.replace(/\D/g, '').slice(0, 4) : ''
           let count = rawCount
           if (!count) {
             const enhancedResult = await worker.recognize(makeLegendFieldTile(cropImageElement, swatch, 'count', 'swatch'), {}, { text: true })
-            rawCount = enhancedResult.data.text.replace(/\D/g, '').slice(0, 4)
+            rawCount = enhancedResult.data.confidence >= 55 ? enhancedResult.data.text.replace(/\D/g, '').slice(0, 4) : ''
             count = rawCount
           }
           let code = codeResults[index].code
-          if (usedCodes.has(code)) code = ''
+          if (usedCodes.has(code)) { code = ''; count = '' }
           if (code) usedCodes.add(code)
           if (code) swatchCodes.push({ text: code, x: swatch.x, y: swatch.y })
           tileResults.push({ swatch, code, count, raw: `${codeResults[index].raw} / ${rawCount}` })
@@ -567,7 +567,7 @@ function App() {
 
         const embeddedCount = tileResults.filter((item) => item.count).length
         if (wideLegend || embeddedCount >= 2) {
-          embeddedRows = tileResults.filter((item) => item.code || item.count).map((item) => ({ id: crypto.randomUUID(), code: item.code, count: item.count }))
+          embeddedRows = tileResults.filter((item) => item.code).map((item) => ({ id: crypto.randomUUID(), code: item.code, count: item.count }))
         } else {
           await worker.setParameters({ tessedit_char_whitelist: '0123456789 ', tessedit_pageseg_mode: PSM.SINGLE_LINE, preserve_interword_spaces: '1' })
           const quantityTop = Math.round(cropImageElement.naturalHeight * 0.5)
