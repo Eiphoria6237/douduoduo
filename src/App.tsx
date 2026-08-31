@@ -195,137 +195,6 @@ async function detectLegendSwatches(url: string): Promise<LegendSwatch[]> {
   })
 }
 
-async function detectLongLegendSwatches(url: string): Promise<LegendSwatch[]> {
-  const image = await loadImage(url)
-  const canvas = document.createElement('canvas')
-  canvas.width = image.naturalWidth
-  canvas.height = image.naturalHeight
-  const context = canvas.getContext('2d', { willReadFrequently: true })!
-  context.drawImage(image, 0, 0)
-  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
-  const step = Math.max(2, Math.ceil(canvas.width / 1000))
-  const width = Math.ceil(canvas.width / step)
-  const height = Math.ceil(canvas.height / step)
-  const rawMask = new Uint8Array(width * height)
-  const histograms = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)]
-  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
-    const source = ((Math.min(canvas.height - 1, y * step) * canvas.width) + Math.min(canvas.width - 1, x * step)) * 4
-    histograms[0][pixels[source]] += 1
-    histograms[1][pixels[source + 1]] += 1
-    histograms[2][pixels[source + 2]] += 1
-  }
-  const background = histograms.map((histogram) => {
-    let best = 255
-    for (let value = 220; value <= 255; value += 1) {
-      if (histogram[value] > histogram[best]) best = value
-    }
-    return best
-  })
-
-  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
-    const source = ((Math.min(canvas.height - 1, y * step) * canvas.width) + Math.min(canvas.width - 1, x * step)) * 4
-    const red = pixels[source]
-    const green = pixels[source + 1]
-    const blue = pixels[source + 2]
-    const distanceFromBackground = Math.sqrt((background[0] - red) ** 2 + (background[1] - green) ** 2 + (background[2] - blue) ** 2)
-    if (distanceFromBackground > 14) rawMask[y * width + x] = 1
-  }
-
-  // Work row-by-row so a diagonal watermark cannot join several chips into one
-  // giant connected component. Runs on adjacent rows are then stacked.
-  const components: Array<{ x0: number; y0: number; x1: number; y1: number; area: number }> = []
-  const active: typeof components = []
-  const maxGap = Math.max(2, Math.round(width * 0.003))
-  for (let y = 0; y < height; y += 1) {
-    const runs: Array<{ x0: number; x1: number }> = []
-    let x = 0
-    while (x < width) {
-      while (x < width && !rawMask[y * width + x]) x += 1
-      if (x >= width) break
-      const x0 = x
-      let lastInk = x
-      let gap = 0
-      while (x < width && gap <= maxGap) {
-        if (rawMask[y * width + x]) { lastInk = x; gap = 0 } else gap += 1
-        x += 1
-      }
-      const runWidth = lastInk - x0 + 1
-      if (runWidth >= width * 0.035 && runWidth <= width * 0.18) runs.push({ x0, x1: lastInk })
-    }
-
-    const used = new Set<number>()
-    for (const run of runs) {
-      const runWidth = run.x1 - run.x0 + 1
-      let bestIndex = -1
-      let bestOverlap = 0
-      active.forEach((component, index) => {
-        if (used.has(index) || component.y1 < y - 1) return
-        const overlap = Math.max(0, Math.min(run.x1, component.x1) - Math.max(run.x0, component.x0) + 1)
-        const score = overlap / Math.min(runWidth, component.x1 - component.x0 + 1)
-        if (score > bestOverlap) { bestOverlap = score; bestIndex = index }
-      })
-      if (bestIndex >= 0 && bestOverlap >= 0.65) {
-        const component = active[bestIndex]
-        component.x0 = Math.min(component.x0, run.x0)
-        component.x1 = Math.max(component.x1, run.x1)
-        component.y1 = y
-        component.area += runWidth
-        used.add(bestIndex)
-      } else active.push({ x0: run.x0, y0: y, x1: run.x1, y1: y, area: runWidth })
-    }
-    for (let index = active.length - 1; index >= 0; index -= 1) {
-      if (active[index].y1 < y - 1) components.push(...active.splice(index, 1))
-    }
-  }
-  components.push(...active)
-  const filteredComponents = components.filter((component) => {
-    const componentWidth = component.x1 - component.x0 + 1
-    const componentHeight = component.y1 - component.y0 + 1
-    const ratio = componentWidth / componentHeight
-    return componentHeight >= Math.max(3, height * 0.018) && componentHeight <= height * 0.35 && ratio > 2.3 && ratio <= 16
-  })
-
-  const rows: typeof components[] = []
-  filteredComponents.sort((a, b) => (a.y0 + a.y1) - (b.y0 + b.y1)).forEach((component) => {
-    const center = (component.y0 + component.y1) / 2
-    const componentHeight = component.y1 - component.y0 + 1
-    const row = rows.find((candidate) => {
-      const rowCenter = candidate.reduce((sum, item) => sum + item.y0 + item.y1, 0) / candidate.length / 2
-      return Math.abs(rowCenter - center) <= Math.max(3, componentHeight * 0.8)
-    })
-    if (row) row.push(component)
-    else rows.push([component])
-  })
-
-  const candidateRows = rows.filter((row) => row.length >= 3 && row.length <= 20).map((row) => {
-    const widths = row.map((item) => item.x1 - item.x0 + 1).sort((a, b) => a - b)
-    const heights = row.map((item) => item.y1 - item.y0 + 1).sort((a, b) => a - b)
-    const medianWidth = widths[Math.floor(widths.length / 2)]
-    const medianHeight = heights[Math.floor(heights.length / 2)]
-    return row.filter((item) => {
-      const itemWidth = item.x1 - item.x0 + 1
-      const itemHeight = item.y1 - item.y0 + 1
-      return itemWidth >= medianWidth * 0.72 && itemWidth <= medianWidth * 1.35 && itemHeight >= medianHeight * 0.65 && itemHeight <= medianHeight * 1.45
-    })
-  }).filter((row) => row.length >= 3)
-  const largestAverageArea = Math.max(0, ...candidateRows.map((row) => row.reduce((sum, item) => sum + item.area, 0) / row.length))
-
-  const selected = candidateRows
-    .filter((row) => row.reduce((sum, item) => sum + item.area, 0) / row.length >= largestAverageArea * 0.35)
-    .sort((a, b) => Math.min(...a.map((item) => item.y0)) - Math.min(...b.map((item) => item.y0)))
-    .flatMap((row) => row.sort((a, b) => a.x0 - b.x0))
-  return selected
-    .map((component) => ({
-      text: '',
-      x: ((component.x0 + component.x1) / 2) * step,
-      y: ((component.y0 + component.y1) / 2) * step,
-      x0: component.x0 * step,
-      y0: component.y0 * step,
-      x1: Math.min(canvas.width, (component.x1 + 1) * step),
-      y1: Math.min(canvas.height, (component.y1 + 1) * step),
-    }))
-}
-
 function makeOcrTile(image: HTMLImageElement, rectangle: { left: number; top: number; width: number; height: number }, mode: 'swatch' | 'number') {
   const source = document.createElement('canvas')
   source.width = Math.max(1, Math.round(rectangle.width))
@@ -384,28 +253,6 @@ async function createThumbnail(file: File) {
 function recognizedMardCode(value: string) {
   const code = normalizeCode(value.replace(/[^A-Z0-9]/gi, ''))
   return MARD_COLOR_BY_CODE.has(code) ? code : ''
-}
-
-function parseLongLegendText(value: string): [string, string] | null {
-  const compact = value.toUpperCase().replace(/[^A-Z0-9]/g, '')
-  const matches = MARD_COLORS.flatMap((color) => {
-    const index = compact.indexOf(color.code)
-    if (index < 0) return []
-    const count = compact.slice(index + color.code.length)
-    return /^\d{1,4}$/.test(count) ? [{ code: color.code, count }] : []
-  }).sort((first, second) => second.code.length - first.code.length)
-  const match = matches[0]
-  return match ? [match.code, match.count] : null
-}
-
-function mergeRecognizedLines(primary: InventoryLine[], additions: InventoryLine[]) {
-  const merged = new Map(primary.map((line) => [normalizeCode(line.code), line]))
-  additions.forEach((line) => {
-    const code = normalizeCode(line.code)
-    const current = merged.get(code)
-    if (!current || !current.count) merged.set(code, line)
-  })
-  return [...merged.values()]
 }
 
 function inventoryLines(pairs: Array<[string, string]>) {
@@ -586,15 +433,13 @@ function App() {
     try {
       const worker = await createWorker('eng', 1, { logger: (message) => { if (message.status === 'recognizing text') setProgress(`正在读取清单… ${Math.round(message.progress * 100)}%`) } })
       await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789()[] ', tessedit_pageseg_mode: PSM.SPARSE_TEXT, preserve_interword_spaces: '1' })
-      const [result, swatches, longSwatches, cropImageElement] = await Promise.all([
+      const [result, swatches, cropImageElement] = await Promise.all([
         worker.recognize(cropUrl, {}, { text: true, blocks: true }),
         detectLegendSwatches(cropUrl),
-        detectLongLegendSwatches(cropUrl),
         loadImage(cropUrl),
       ])
       let swatchCodes: OcrWord[] = swatches
       let quantityWords: OcrWord[] = []
-      let longRecognized: InventoryLine[] = []
       const detailText: string[] = []
       if (swatches.length > 1) {
         await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', tessedit_pageseg_mode: PSM.SINGLE_WORD })
@@ -623,27 +468,10 @@ function App() {
         })
         detailText.push(`数量:${quantityResult.data.text.trim() || '?'}`)
       }
-      if (longSwatches.length >= 3) {
-        await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789()[] ', tessedit_pageseg_mode: PSM.SINGLE_LINE, preserve_interword_spaces: '1' })
-        const pairs: Array<[string, string]> = []
-        const longDetails: string[] = []
-        for (const swatch of longSwatches) {
-          const insetX = Math.max(1, Math.round((swatch.x1 - swatch.x0) * 0.04))
-          const insetY = Math.max(1, Math.round((swatch.y1 - swatch.y0) * 0.06))
-          const tile = makeOcrTile(cropImageElement, { left: swatch.x0 + insetX, top: swatch.y0 + insetY, width: swatch.x1 - swatch.x0 - insetX * 2, height: swatch.y1 - swatch.y0 - insetY * 2 }, 'swatch')
-          const stripResult = await worker.recognize(tile, {}, { text: true })
-          const pair = parseLongLegendText(stripResult.data.text)
-          if (pair) pairs.push(pair)
-          longDetails.push(`${stripResult.data.text.trim() || '?'}>${pair ? `${pair[0]}(${pair[1]})` : '?'}`)
-        }
-        if (pairs.length >= 3) longRecognized = inventoryLines(pairs)
-        detailText.push(`长条:${longDetails.join(' / ')}`)
-      }
       await worker.terminate()
       const parsed = parseOcrText(result.data.text, extractOcrWords(result.data.blocks))
-      const stableRecognized = swatchCodes.length > 1 ? assistedLines(swatchCodes, quantityWords) : parsed
-      const recognized = mergeRecognizedLines(stableRecognized, longRecognized)
-      setOcrText(`${result.data.text}\n逐项识别：${detailText.join(' / ') || '无'}\n色块检测：${swatches.map((swatch) => swatch.text).join('、') || '无'}\n长条检测：${longSwatches.length}`)
+      const recognized = swatchCodes.length > 1 ? assistedLines(swatchCodes, quantityWords) : parsed
+      setOcrText(`${result.data.text}\n逐项识别：${detailText.join(' / ') || '无'}\n色块检测：${swatches.map((swatch) => swatch.text).join('、') || '无'}`)
       setRows(recognized.length ? recognized : [newLine()])
       setProgress(recognized.length ? `已读出 ${recognized.length} 种颜色，请逐项确认。` : '没有可靠读出结果，请在下方手动补录。')
     } catch {
