@@ -304,14 +304,12 @@ function makeOcrTile(image: HTMLImageElement, rectangle: { left: number; top: nu
   return tile
 }
 
-function makeLegendFieldTiles(image: HTMLImageElement, swatches: LegendSwatch[], field: 'code' | 'count', mode: 'swatch' | 'raw') {
-  return swatches.map((swatch) => {
-    const width = swatch.x1 - swatch.x0
-    const height = swatch.y1 - swatch.y0
-    const top = swatch.y0 + Math.max(1, height * 0.05)
-    if (field === 'code') return makeOcrTile(image, { left: swatch.x0 + width * 0.02, top, width: width * 0.34, height: height * 0.9 }, mode)
-    return makeOcrTile(image, { left: swatch.x0 + width * 0.42, top, width: width * 0.54, height: height * 0.9 }, mode)
-  })
+function makeLegendFieldTile(image: HTMLImageElement, swatch: LegendSwatch, field: 'code' | 'count', mode: 'swatch' | 'raw') {
+  const width = swatch.x1 - swatch.x0
+  const height = swatch.y1 - swatch.y0
+  const top = swatch.y0 + Math.max(1, height * 0.05)
+  if (field === 'code') return makeOcrTile(image, { left: swatch.x0 + width * 0.02, top, width: width * 0.34, height: height * 0.9 }, mode)
+  return makeOcrTile(image, { left: swatch.x0 + width * 0.42, top, width: width * 0.54, height: height * 0.9 }, mode)
 }
 
 async function createThumbnail(file: File) {
@@ -532,19 +530,15 @@ function App() {
       if (swatches.length > 1) {
         swatchCodes = []
         const tileResults: Array<{ swatch: LegendSwatch; code: string; count: string; raw: string }> = []
-        const rawCodeTiles = makeLegendFieldTiles(cropImageElement, swatches, 'code', 'raw')
-        const enhancedCodeTiles = makeLegendFieldTiles(cropImageElement, swatches, 'code', 'swatch')
-        const rawCountTiles = makeLegendFieldTiles(cropImageElement, swatches, 'count', 'raw')
-        const enhancedCountTiles = makeLegendFieldTiles(cropImageElement, swatches, 'count', 'swatch')
         const wideLegend = swatches.reduce((sum, swatch) => sum + (swatch.x1 - swatch.x0) / Math.max(1, swatch.y1 - swatch.y0), 0) / swatches.length > 2.4
         await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', tessedit_pageseg_mode: PSM.SINGLE_WORD })
         const codeResults: Array<{ code: string; raw: string }> = []
         for (let index = 0; index < swatches.length; index += 1) {
-          const rawResult = await worker.recognize(rawCodeTiles[index], {}, { text: true })
+          const rawResult = await worker.recognize(makeLegendFieldTile(cropImageElement, swatches[index], 'code', 'raw'), {}, { text: true })
           let raw = rawResult.data.text.trim()
           let code = recognizedMardCode(raw) || codeFromLegendText(raw)
           if (!code) {
-            const enhancedResult = await worker.recognize(enhancedCodeTiles[index], {}, { text: true })
+            const enhancedResult = await worker.recognize(makeLegendFieldTile(cropImageElement, swatches[index], 'code', 'swatch'), {}, { text: true })
             const enhanced = enhancedResult.data.text.trim()
             code = recognizedMardCode(enhanced) || codeFromLegendText(enhanced)
             raw = [raw, enhanced].filter(Boolean).join(' | ')
@@ -555,11 +549,11 @@ function App() {
         const usedCodes = new Set<string>()
         for (let index = 0; index < swatches.length; index += 1) {
           const swatch = swatches[index]
-          const rawResult = await worker.recognize(rawCountTiles[index], {}, { text: true })
+          const rawResult = await worker.recognize(makeLegendFieldTile(cropImageElement, swatch, 'count', 'raw'), {}, { text: true })
           let rawCount = rawResult.data.text.replace(/\D/g, '').slice(0, 4)
           let count = rawCount
           if (!count) {
-            const enhancedResult = await worker.recognize(enhancedCountTiles[index], {}, { text: true })
+            const enhancedResult = await worker.recognize(makeLegendFieldTile(cropImageElement, swatch, 'count', 'swatch'), {}, { text: true })
             rawCount = enhancedResult.data.text.replace(/\D/g, '').slice(0, 4)
             count = rawCount
           }
@@ -596,8 +590,10 @@ function App() {
       setOcrText(`${result.data.text}\n逐项识别：${detailText.join(' / ') || '无'}\n色块检测：${swatches.map((swatch) => swatch.text).join('、') || '无'}`)
       setRows(recognized.length ? recognized : [newLine()])
       setProgress(recognized.length ? `已读出 ${recognized.length} 种颜色，请逐项确认。` : '没有可靠读出结果，请在下方手动补录。')
-    } catch {
-      setProgress('识别器未能启动，请检查网络后重试。')
+    } catch (error) {
+      console.error(error)
+      const message = error instanceof Error ? error.message : '未知错误'
+      setProgress(`识别失败：${message}`)
     }
   }
 
