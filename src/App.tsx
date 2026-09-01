@@ -175,6 +175,12 @@ function AuthPanel({ email, message, onEmail, onSend }: { email: string; message
   </section>
 }
 
+function StatusRadios({ project, onChange }: { project: SavedProject; onChange: (status: ProjectStatus) => void }) {
+  return <div className="status-radios" role="radiogroup" aria-label={`${project.name}状态`} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+    {Object.entries(STATUS_LABELS).map(([value, label]) => <label className={value} key={value}><input type="radio" name={`status-${project.id}`} value={value} checked={project.status === value} onChange={() => onChange(value as ProjectStatus)} /><span>{label}</span></label>)}
+  </div>
+}
+
 function App() {
   const fileInput = useRef<HTMLInputElement>(null)
   const inventorySeries = useRef<Record<string, HTMLDetailsElement | null>>({})
@@ -183,6 +189,7 @@ function App() {
   const [email, setEmail] = useState('')
   const [authMessage, setAuthMessage] = useState('')
   const [projects, setProjects] = useState<SavedProject[]>([])
+  const [showArchived, setShowArchived] = useState(false)
   const [inventory, setInventory] = useState<InventoryRecord[]>([])
   const [inventorySearch, setInventorySearch] = useState('')
   const [cloudMessage, setCloudMessage] = useState('')
@@ -504,10 +511,23 @@ function App() {
     palette: MARD_COLORS.filter((color) => color.code.startsWith(series)),
   })).filter((group) => group.items.length > 0)
   const savedGroupNames = [...new Set(projects.map((project) => project.group_name?.trim()).filter((name): name is string => Boolean(name)))].sort((first, second) => first.localeCompare(second, 'zh-CN', { numeric: true }))
+  const archivedCount = projects.filter((project) => project.status === 'cancelled').length
+  const activeProjectCount = projects.length - archivedCount
+  const visibleProjects = showArchived ? projects : projects.filter((project) => project.status !== 'cancelled')
   const projectGroups = [...savedGroupNames, ''].map((groupName) => ({
     name: groupName,
-    projects: projects.filter((project) => (project.group_name?.trim() || '') === groupName),
+    projects: visibleProjects.filter((project) => (project.group_name?.trim() || '') === groupName),
+    progressProjects: projects.filter((project) => project.status !== 'cancelled' && (project.group_name?.trim() || '') === groupName),
   })).filter((group) => group.projects.length > 0)
+
+  function renderProjectCard(project: SavedProject) {
+    return <article className={`project-card ${project.status} ${project.thumbnailUrl ? 'clickable' : ''}`} key={project.id} tabIndex={project.thumbnailUrl ? 0 : undefined} onClick={() => showProject(project)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showProject(project) } }}>
+      <div className="project-thumb">{project.thumbnailUrl ? <img src={project.thumbnailUrl} alt={`${project.name}缩略图`} /> : <div><BeadMark /><span>旧图纸无缩略图</span></div>}{project.status === 'completed' && <div className="completion-banner" aria-label="这张图纸已完成"><i></i><i></i><strong>拼完啦!</strong><i></i><i></i></div>}<span>{project.total ?? project.bead_project_items.reduce((value, item) => value + item.count, 0)} 颗</span></div>
+      <div className="project-body"><div className="project-meta-row"><select className="group-select" aria-label={`${project.name}分组`} value={project.group_name || ''} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onChange={(event) => chooseProjectGroup(project.id, event.target.value)}><option value="">未分组</option>{savedGroupNames.map((name) => <option key={name} value={name}>{name}</option>)}<option value="__new__">＋ 新建分组</option></select><StatusRadios project={project} onChange={(status) => void updateProjectStatus(project.id, status)} /></div>
+        <div className="project-items">{project.bead_project_items.slice().sort((a, b) => compareCodes(normalizeCode(a.code), normalizeCode(b.code))).map((item) => <span key={item.code}><i style={{ background: MARD_COLOR_BY_CODE.get(normalizeCode(item.code))?.hex }}></i><b>{normalizeCode(item.code)}</b>{item.count}</span>)}</div>
+      </div>
+    </article>
+  }
 
   return <main className="app-shell">
     <header className="site-header">
@@ -576,8 +596,9 @@ function App() {
     </section>}
 
     {page === 'projects' && <section className="page-view">
-      <div className="page-title"><div><p className="eyebrow">图纸与用量</p><h1>我的图纸</h1></div><div className="big-count">{projects.length}<small>张</small></div></div>
-      {!session ? <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} /> : projects.length === 0 ? <div className="empty-state"><BeadMark /><h2>还没有图纸</h2><p>识别并确认一张图纸后，它会出现在这里。</p><button type="button" onClick={() => setPage('scan')}>去识别第一张</button></div> : <div className="project-groups">{projectGroups.map((group) => { const completed = group.projects.filter((project) => project.status === 'completed').length; const progress = Math.round(completed / group.projects.length * 100); return <section className="project-group" key={group.name || '__ungrouped'}><div className="project-group-heading"><div><span>{group.name ? 'COLLECTION' : 'INBOX'}</span><h2>{group.name || '未分组'}</h2></div><div className="group-progress"><strong>{completed}<small>/{group.projects.length}</small></strong><span><i style={{ width: `${progress}%` }}></i></span><b>{progress}%</b></div></div><div className="project-grid">{group.projects.map((project) => <article className={`project-card ${project.status} ${project.thumbnailUrl ? 'clickable' : ''}`} key={project.id} tabIndex={project.thumbnailUrl ? 0 : undefined} onClick={() => showProject(project)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showProject(project) } }}><div className="project-thumb">{project.thumbnailUrl ? <img src={project.thumbnailUrl} alt={`${project.name}缩略图`} /> : <div><BeadMark /><span>旧图纸无缩略图</span></div>}{project.status === 'completed' && <div className="completion-banner" aria-label="这张图纸已完成"><i></i><i></i><strong>拼完啦!</strong><i></i><i></i></div>}<span>{project.total ?? project.bead_project_items.reduce((value, item) => value + item.count, 0)} 颗</span></div><div className="project-body"><div className="project-heading"><div><small>{new Date(project.created_at).toLocaleDateString('zh-CN')}</small><h2>{project.name}</h2></div><div className="project-card-controls"><select className="group-select" aria-label={`${project.name}分组`} value={project.group_name || ''} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onChange={(event) => chooseProjectGroup(project.id, event.target.value)}><option value="">未分组</option>{savedGroupNames.map((name) => <option key={name} value={name}>{name}</option>)}<option value="__new__">＋ 新建分组</option></select><select className={`status-select ${project.status}`} aria-label={`${project.name}状态`} value={project.status} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onChange={(event) => void updateProjectStatus(project.id, event.target.value as ProjectStatus)}>{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div></div><div className="project-items">{project.bead_project_items.slice().sort((a, b) => compareCodes(normalizeCode(a.code), normalizeCode(b.code))).map((item) => <span key={item.code}><i style={{ background: MARD_COLOR_BY_CODE.get(normalizeCode(item.code))?.hex }}></i><b>{normalizeCode(item.code)}</b>{item.count}</span>)}</div><p className="status-note">{project.status === 'planned' ? '已计入 pending，尚未扣库存' : project.status === 'completed' ? '已从实际剩余库存中扣除' : '不参与库存与 pending 计算'}</p></div></article>)}</div></section> })}</div>}
+      <div className="page-title"><div><p className="eyebrow">图纸与用量</p><h1>我的图纸</h1></div><div className="big-count">{activeProjectCount}<small>张</small></div></div>
+      {session && projects.length > 0 && <div className="projects-toolbar"><button className={`archive-toggle ${showArchived ? 'showing' : ''}`} type="button" aria-pressed={showArchived} onClick={() => setShowArchived((visible) => !visible)}>{showArchived ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-5.5 9.5-5.5 9.5 5.5 9.5 5.5-3.5 5.5-9.5 5.5S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.7"/></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5c2.1 2.5 4.7 3.8 8 3.8s5.9-1.3 8-3.8M6.3 15.5l-1.5 2M10 16.8l-.4 2.4M14 16.8l.4 2.4M17.7 15.5l1.5 2"/></svg>}<span>{showArchived ? '隐藏归档' : `归档 ${archivedCount}`}</span></button></div>}
+      {!session ? <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} /> : projects.length === 0 ? <div className="empty-state"><BeadMark /><h2>还没有图纸</h2><p>识别并确认一张图纸后，它会出现在这里。</p><button type="button" onClick={() => setPage('scan')}>去识别第一张</button></div> : visibleProjects.length === 0 ? <div className="empty-state archived-empty"><BeadMark /><h2>没有进行中的图纸</h2><button type="button" onClick={() => setShowArchived(true)}>查看归档</button></div> : <div className="project-groups">{projectGroups.map((group) => { const completed = group.progressProjects.filter((project) => project.status === 'completed').length; const total = group.progressProjects.length; const progress = total ? Math.round(completed / total * 100) : 0; return <section className="project-group" key={group.name || '__ungrouped'}><div className="project-group-heading"><div><span>{group.name ? 'COLLECTION' : 'INBOX'}</span><h2>{group.name || '未分组'}</h2></div><div className={`group-progress ${total ? '' : 'archived-only'}`}><strong>{total ? completed : 0}<small>/{total}</small></strong><span><i style={{ width: `${progress}%` }}></i></span><b>{total ? `${progress}%` : '归档'}</b></div></div><div className="project-grid">{group.projects.map(renderProjectCard)}</div></section> })}</div>}
     </section>}
 
     {openProject?.thumbnailUrl && <div className="chart-viewer" role="dialog" aria-modal="true" aria-label={`查看 ${openProject.name}`}>
