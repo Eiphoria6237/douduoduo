@@ -44,10 +44,38 @@ function BeadMark() {
 function loadImage(url: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image()
+    image.crossOrigin = 'anonymous'
     image.onload = () => resolve(image)
     image.onerror = reject
     image.src = url
   })
+}
+
+async function createColorMask(url: string, hex: string) {
+  const image = await loadImage(url)
+  const scale = Math.min(1, 1400 / Math.max(image.naturalWidth, image.naturalHeight))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
+  const context = canvas.getContext('2d', { willReadFrequently: true })!
+  context.drawImage(image, 0, 0, canvas.width, canvas.height)
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height)
+  const target = [1, 3, 5].map((index) => Number.parseInt(hex.slice(index, index + 2), 16))
+  const lightness = (target[0] + target[1] + target[2]) / 3
+  const threshold = lightness > 235 ? 28 : lightness < 40 ? 48 : 62
+
+  for (let index = 0; index < pixels.data.length; index += 4) {
+    const red = pixels.data[index] - target[0]
+    const green = pixels.data[index + 1] - target[1]
+    const blue = pixels.data[index + 2] - target[2]
+    const distance = Math.sqrt(red * red * .3 + green * green * .59 + blue * blue * .11)
+    pixels.data[index] = 255
+    pixels.data[index + 1] = 255
+    pixels.data[index + 2] = 255
+    pixels.data[index + 3] = distance <= threshold ? 255 : 0
+  }
+  context.putImageData(pixels, 0, 0)
+  return canvas.toDataURL('image/png')
 }
 
 function cropImage(image: HTMLImageElement, crop: PercentCrop) {
@@ -109,6 +137,10 @@ function App() {
   const [cloudMessage, setCloudMessage] = useState('')
   const [openProject, setOpenProject] = useState<SavedProject | null>(null)
   const [viewerZoom, setViewerZoom] = useState(100)
+  const [highlightCode, setHighlightCode] = useState<string | null>(null)
+  const [highlightMask, setHighlightMask] = useState<string | null>(null)
+  const [highlightMessage, setHighlightMessage] = useState('')
+  const maskRequest = useRef(0)
 
   const [sourceFile, setSourceFile] = useState<File | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
@@ -185,7 +217,37 @@ function App() {
   function showProject(project: SavedProject) {
     if (!project.thumbnailUrl) return
     setViewerZoom(100)
+    setHighlightCode(null)
+    setHighlightMask(null)
+    setHighlightMessage('')
     setOpenProject(project)
+  }
+
+  async function selectHighlight(code: string) {
+    if (!openProject?.thumbnailUrl) return
+    if (highlightCode === code) {
+      maskRequest.current += 1
+      setHighlightCode(null)
+      setHighlightMask(null)
+      setHighlightMessage('')
+      return
+    }
+    const color = MARD_COLOR_BY_CODE.get(code)
+    if (!color) return
+    const request = ++maskRequest.current
+    setHighlightCode(code)
+    setHighlightMask(null)
+    setHighlightMessage(`正在寻找 ${code}…`)
+    try {
+      const mask = await createColorMask(openProject.thumbnailUrl, color.hex)
+      if (request !== maskRequest.current) return
+      setHighlightMask(mask)
+      setHighlightMessage('')
+    } catch {
+      if (request !== maskRequest.current) return
+      setHighlightCode(null)
+      setHighlightMessage('这张图纸无法在本地分析颜色。')
+    }
   }
 
   function handleFile(file?: File) {
@@ -421,8 +483,8 @@ function App() {
 
     {openProject?.thumbnailUrl && <div className="chart-viewer" role="dialog" aria-modal="true" aria-label={`查看 ${openProject.name}`}>
       <header className="viewer-header"><div><span>正在拼</span><strong>{openProject.name}</strong></div><button type="button" aria-label="关闭图纸" onClick={() => setOpenProject(null)}>×</button></header>
-      <div className="viewer-canvas"><img src={openProject.thumbnailUrl} alt={openProject.name} style={{ width: `${viewerZoom}%` }} /></div>
-      <footer className="viewer-toolbar"><button type="button" onClick={() => setViewerZoom((zoom) => Math.max(50, zoom - 25))}>−</button><button className="zoom-readout" type="button" onClick={() => setViewerZoom(100)}>{viewerZoom}%</button><button type="button" onClick={() => setViewerZoom((zoom) => Math.min(300, zoom + 25))}>＋</button><button className="fit-button" type="button" onClick={() => setViewerZoom(100)}>适应宽度</button></footer>
+      <div className="viewer-canvas"><div className="viewer-image-stage" style={{ width: `${viewerZoom}%` }}><img className={highlightMask ? 'dimmed-chart' : ''} src={openProject.thumbnailUrl} alt={openProject.name} />{highlightMask && <img className="highlight-chart" src={openProject.thumbnailUrl} alt="" style={{ WebkitMaskImage: `url(${highlightMask})`, maskImage: `url(${highlightMask})` }} />}</div></div>
+      <footer className="viewer-controls"><div className="viewer-palette" aria-label="选择要高亮的色号"><span>{highlightMessage || (highlightCode ? `已选 ${highlightCode}` : '点色号高亮')}</span><div>{openProject.bead_project_items.slice().sort((a, b) => compareCodes(a.code, b.code)).map((item) => { const code = normalizeCode(item.code); return <button className={highlightCode === code ? 'active' : ''} type="button" key={code} onClick={() => void selectHighlight(code)}><i style={{ background: MARD_COLOR_BY_CODE.get(code)?.hex }}></i><b>{code}</b><small>{item.count}</small></button> })}</div></div><div className="viewer-toolbar"><button type="button" onClick={() => setViewerZoom((zoom) => Math.max(50, zoom - 25))}>−</button><button className="zoom-readout" type="button" onClick={() => setViewerZoom(100)}>{viewerZoom}%</button><button type="button" onClick={() => setViewerZoom((zoom) => Math.min(300, zoom + 25))}>＋</button><button className="fit-button" type="button" onClick={() => setViewerZoom(100)}>适应宽度</button></div></footer>
     </div>}
   </main>
 }
