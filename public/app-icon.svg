@@ -1,11 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#f6f1e7"/>
-  <rect x="94" y="94" width="142" height="142" rx="52" fill="#d95d45"/>
-  <rect x="276" y="94" width="142" height="142" rx="52" fill="#557e6e"/>
-  <rect x="94" y="276" width="142" height="142" rx="52" fill="#edbf55"/>
-  <rect x="276" y="276" width="142" height="142" rx="52" fill="#292723"/>
-  <circle cx="165" cy="165" r="17" fill="#fffdf7" opacity=".85"/>
-  <circle cx="347" cy="165" r="17" fill="#fffdf7" opacity=".85"/>
-  <circle cx="165" cy="347" r="17" fill="#fffdf7" opacity=".85"/>
-  <circle cx="347" cy="347" r="17" fill="#fffdf7" opacity=".85"/>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f5fdff"/><stop offset=".52" stop-color="#cdefff"/><stop offset="1" stop-color="#ffddea"/></linearGradient>
+    <linearGradient id="pink" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ffacd0"/><stop offset=".5" stop-color="#ff6fa5"/><stop offset="1" stop-color="#ec4d8b"/></linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#a7ecf6"/><stop offset=".5" stop-color="#64c7e1"/><stop offset="1" stop-color="#3e9cc4"/></linearGradient>
+    <linearGradient id="yellow" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fff3a5"/><stop offset=".5" stop-color="#ffd45f"/><stop offset="1" stop-color="#efb83f"/></linearGradient>
+    <linearGradient id="violet" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#d7ccff"/><stop offset=".5" stop-color="#a99ae9"/><stop offset="1" stop-color="#7c6ac6"/></linearGradient>
+    <pattern id="checks" width="32" height="32" patternUnits="userSpaceOnUse"><rect width="16" height="16" fill="#fff" opacity=".45"/><rect x="16" y="16" width="16" height="16" fill="#fff" opacity=".45"/></pattern>
+  </defs>
+  <rect width="512" height="512" fill="#dff5ff"/>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#78bde2"/>
+  <rect x="24" y="24" width="464" height="464" rx="100" fill="url(#sky)" stroke="#4f78aa" stroke-width="8"/>
+  <rect x="38" y="38" width="436" height="436" rx="88" fill="url(#checks)" stroke="#fff" stroke-width="7"/>
+  <path d="M82 113h18V95h14v18h18v14h-18v18h-14v-18H82z" fill="#fff" stroke="#e55b93" stroke-width="5"/>
+  <path d="M390 372h16v-16h13v16h16v13h-16v16h-13v-16h-16z" fill="#ffe068" stroke="#e36a99" stroke-width="5"/>
+  <path d="M405 92l10 20 22 3-16 15 4 22-20-10-20 10 4-22-16-15 22-3z" fill="#ffe46e" stroke="#e06799" stroke-width="6" stroke-linejoin="round"/>
+  <rect x="99" y="109" width="330" height="322" rx="76" fill="#668fbc" opacity=".28"/>
+  <rect x="91" y="99" width="330" height="322" rx="76" fill="#fff9fd" stroke="#5c7fac" stroke-width="8"/>
+  <rect x="103" y="111" width="306" height="298" rx="64" fill="#e9f8ff" stroke="#fff" stroke-width="6"/>
+  <g stroke="#4a6590" stroke-width="7">
+    <rect x="126" y="135" width="126" height="126" rx="28" fill="#6f8fb8" opacity=".25" stroke="none"/><rect x="119" y="127" width="126" height="126" rx="28" fill="url(#pink)"/>
+    <rect x="274" y="135" width="126" height="126" rx="28" fill="#6f8fb8" opacity=".25" stroke="none"/><rect x="267" y="127" width="126" height="126" rx="28" fill="url(#cyan)"/>
+    <rect x="126" y="283" width="126" height="126" rx="28" fill="#6f8fb8" opacity=".25" stroke="none"/><rect x="119" y="275" width="126" height="126" rx="28" fill="url(#yellow)"/>
+    <rect x="274" y="283" width="126" height="126" rx="28" fill="#6f8fb8" opacity=".25" stroke="none"/><rect x="267" y="275" width="126" height="126" rx="28" fill="url(#violet)"/>
+  </g>
+  <g fill="#fff" opacity=".78"><rect x="139" y="145" width="65" height="14" rx="7"/><rect x="287" y="145" width="65" height="14" rx="7"/><rect x="139" y="293" width="65" height="14" rx="7"/><rect x="287" y="293" width="65" height="14" rx="7"/></g>
+  <g fill="#fff" stroke="#4a6590" stroke-width="5"><circle cx="182" cy="190" r="16"/><circle cx="330" cy="190" r="16"/><circle cx="182" cy="338" r="16"/><circle cx="330" cy="338" r="16"/></g>
 </svg>
