@@ -50,16 +50,21 @@
 .series-stock-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;padding:12px;border-top:1px solid var(--line);background:#eee8dd}
 .color-stock-card{overflow:hidden;border:1px solid var(--line);border-radius:13px;background:var(--paper)}
 .color-stock-card.below-line{border-color:#e5795b;box-shadow:inset 0 0 0 1px #e5795b}
-.stock-color-face{display:flex;min-height:88px;align-items:flex-start;justify-content:space-between;gap:8px;padding:10px;border-bottom:1px solid rgba(41,39,35,.18)}
-.stock-color-face strong{padding:5px 7px;border:1px solid rgba(41,39,35,.22);border-radius:7px;background:rgba(255,253,247,.9);box-shadow:1px 1px 0 rgba(41,39,35,.35);color:var(--ink);font:850 14px var(--mono)}
-.stock-color-face span{padding:5px 7px;border-radius:100px;background:var(--coral);color:#fff;font:800 9px var(--mono)}
-.stock-numbers{display:grid;grid-template-columns:repeat(3,1fr);padding:10px 8px 7px}
-.stock-numbers span{display:grid;gap:3px;text-align:center}
-.stock-numbers span+span{border-left:1px solid var(--line)}
-.stock-numbers small{color:var(--muted);font-size:8px}
-.stock-numbers b{font:800 14px var(--mono)}
-.color-stock-card .stock-controls{padding:0 8px 9px;grid-template-columns:52px 1fr 52px}
+.stock-color-face{display:flex;min-height:62px;align-items:flex-start;justify-content:space-between;gap:8px;padding:9px;border-bottom:1px solid rgba(41,39,35,.18)}
+.stock-color-face strong{padding:4px 7px;border:1px solid rgba(41,39,35,.22);border-radius:6px;background:rgba(255,253,247,.92);box-shadow:1px 1px 0 rgba(41,39,35,.3);color:var(--ink);font:850 13px var(--mono)}
+.stock-color-face span{padding:4px 7px;border-radius:100px;background:var(--coral);color:#fff;font:800 8px var(--mono)}
+.stock-plan{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;padding:12px 12px 10px}
+.stock-plan>div,.stock-plan>span{display:grid;gap:3px}
+.stock-plan small,.stock-editor>span{color:var(--muted);font-size:8px}
+.stock-plan strong{color:var(--ink);font:850 25px/1 var(--mono)}
+.stock-plan>span{text-align:right}
+.stock-plan b{color:var(--muted);font:750 13px/1 var(--mono)}
+.stock-editor{display:grid;gap:6px;margin:0 8px 8px;padding-top:8px;border-top:1px solid var(--line)}
+.stock-editor>span{padding-left:2px}
+.color-stock-card .stock-controls{grid-template-columns:48px 1fr 48px}
+.color-stock-card .stock-controls button{background:#ede7dc}
+.color-stock-card .stock-controls input{border-color:#bdb5a8;background:#fff;font-size:13px}
 
-@media(max-width:680px){.crop-stage{max-height:55vh}.crop-stage img{max-height:53vh}.crop-ready{align-items:flex-start;flex-direction:column;gap:8px}.pickup-grid{grid-template-columns:repeat(3,1fr)}.inventory-browser-heading>span{display:none}.color-series summary{grid-template-columns:92px 1fr auto 18px;gap:10px;padding:10px}.series-cover{height:68px;grid-template-columns:repeat(6,1fr)}.series-title strong{font-size:20px}.series-meta b{font-size:23px}.series-stock-grid{grid-template-columns:1fr 1fr;gap:8px;padding:8px}.stock-color-face{min-height:76px}.stock-numbers{padding-right:5px;padding-left:5px}.color-stock-card .stock-controls{grid-template-columns:45px 1fr 45px;padding-right:5px;padding-left:5px}.color-stock-card .stock-controls button,.color-stock-card .stock-controls input{font-size:9px}}
+@media(max-width:680px){.crop-stage{max-height:55vh}.crop-stage img{max-height:53vh}.crop-ready{align-items:flex-start;flex-direction:column;gap:8px}.pickup-grid{grid-template-columns:repeat(3,1fr)}.inventory-browser-heading>span{display:none}.color-series summary{grid-template-columns:92px 1fr auto 18px;gap:10px;padding:10px}.series-cover{height:68px;grid-template-columns:repeat(6,1fr)}.series-title strong{font-size:20px}.series-meta b{font-size:23px}.series-stock-grid{grid-template-columns:1fr 1fr;gap:8px;padding:8px}.color-stock-card .stock-controls{grid-template-columns:45px 1fr 45px}.color-stock-card .stock-controls button,.color-stock-card .stock-controls input{font-size:9px}}
 
 @media(max-width:430px){.pickup-grid{grid-template-columns:repeat(2,1fr)}.series-stock-grid{grid-template-columns:1fr}.color-series summary{grid-template-columns:84px 1fr auto 16px}.series-cover{height:62px}.series-title strong{font-size:18px}.series-meta{display:none}}
