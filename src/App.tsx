@@ -98,6 +98,7 @@ function AuthPanel({ email, message, onEmail, onSend }: { email: string; message
 
 function App() {
   const fileInput = useRef<HTMLInputElement>(null)
+  const inventorySeries = useRef<Record<string, HTMLDetailsElement | null>>({})
   const [page, setPage] = useState<Page>('scan')
   const [session, setSession] = useState<Session | null>(null)
   const [email, setEmail] = useState('')
@@ -292,6 +293,16 @@ function App() {
     if (error) { setInventory(previous); setCloudMessage(`库存更新失败：${error.message}`) }
   }
 
+  function jumpToInventorySeries(code: string) {
+    setInventorySearch('')
+    requestAnimationFrame(() => {
+      const section = inventorySeries.current[code[0]]
+      if (!section) return
+      section.open = true
+      section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
+
   const sum = rows.reduce((value, row) => value + (Number(row.count) || 0), 0)
   const delta = total ? Number(total) - sum : 0
   const updateRow = (id: string, key: 'code' | 'count', value: string) => setRows((current) => current.map((row) => row.id === id ? { ...row, [key]: key === 'code' ? value.toUpperCase() : value.replace(/\D/g, '') } : row))
@@ -356,20 +367,17 @@ function App() {
     {page === 'inventory' && <section className="page-view">
       <div className="page-title"><div><p className="eyebrow">221 色标准豆仓</p><h1>我的豆仓</h1></div><div className="big-count">{inventory.length}<small>色</small></div></div>
       {!session ? <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} /> : <>
-        <section className="pickup-panel" aria-labelledby="pickup-title">
-          <div className="pickup-heading"><div><span className="step">PICKUP</span><h2 id="pickup-title">补豆计划</h2></div><strong>{pickupItems.length}<small> 色待补</small></strong></div>
-          <p>只显示扣除 pending 后低于补充线的颜色。H1、H2、H7 补充线为 2000，其余为 500。</p>
-          {pickupItems.length ? <div className="pickup-grid">{pickupItems.map((item) => <article className="pickup-card" key={item.code}>
-            <span className="pickup-swatch" style={{ background: item.color?.hex }}></span>
-            <div><strong>{item.code}</strong><small>计划后 {item.afterPending}</small></div>
-            <div className="pickup-amount"><b>+{item.pickup}</b><small>补至 {item.line}</small></div>
-          </article>)}</div> : <div className="pickup-clear">所有颜色都在补充线以上。</div>}
-        </section>
+        {pickupItems.length > 0 && <section className="pickup-panel" aria-labelledby="pickup-title">
+          <div className="pickup-heading"><div><span className="step">PICKUP</span><h2 id="pickup-title">需要补豆</h2></div><strong>{pickupItems.length}<small> 色</small></strong></div>
+          <div className="pickup-grid">{pickupItems.map((item) => <button className="pickup-card" type="button" key={item.code} onClick={() => jumpToInventorySeries(item.code)}>
+            <strong>{item.code}</strong><span>计划后 {item.afterPending}</span>
+          </button>)}</div>
+        </section>}
 
         <div className="inventory-browser">
           <div className="inventory-browser-heading"><div><span className="step">ALL COLORS</span><h2>按系列查看</h2></div><span>点击系列展开库存</span></div>
           <label className="search-box"><span>⌕</span><input value={inventorySearch} placeholder="搜索色号，例如 A17" onChange={(event) => setInventorySearch(event.target.value)} /></label>
-          <div className="color-series-list">{inventoryGroups.map((group) => <details className="color-series" key={group.series} open={inventoryQuery ? true : undefined}>
+          <div className="color-series-list">{inventoryGroups.map((group) => <details className="color-series" key={group.series} ref={(section) => { inventorySeries.current[group.series] = section }} open={inventoryQuery ? true : undefined}>
             <summary>
               <div className="series-cover" aria-hidden="true">{group.palette.map((color) => <i key={color.code} style={{ background: color.hex }}></i>)}</div>
               <div className="series-title"><strong>{group.series} 系列</strong><span>{group.palette[0]?.code}–{group.palette.at(-1)?.code}</span></div>
