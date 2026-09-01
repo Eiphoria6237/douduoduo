@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import ReactCrop, { type PercentCrop } from 'react-image-crop'
 import { MARD_COLOR_BY_CODE, MARD_COLORS } from './data/mardColors'
@@ -78,6 +78,56 @@ async function createColorMask(url: string, hex: string) {
   return canvas.toDataURL('image/png')
 }
 
+async function createSampledColorMask(url: string, xRatio: number, yRatio: number) {
+  const image = await loadImage(url)
+  const scale = Math.min(1, 1400 / Math.max(image.naturalWidth, image.naturalHeight))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
+  const context = canvas.getContext('2d', { willReadFrequently: true })!
+  context.drawImage(image, 0, 0, canvas.width, canvas.height)
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height)
+  const centerX = Math.round(xRatio * canvas.width)
+  const centerY = Math.round(yRatio * canvas.height)
+  const radius = Math.max(4, Math.round(Math.min(canvas.width, canvas.height) * .006))
+  const samples = new Map<string, { count: number; red: number; green: number; blue: number }>()
+
+  for (let y = Math.max(0, centerY - radius); y <= Math.min(canvas.height - 1, centerY + radius); y += 1) {
+    for (let x = Math.max(0, centerX - radius); x <= Math.min(canvas.width - 1, centerX + radius); x += 1) {
+      const index = (y * canvas.width + x) * 4
+      const red = pixels.data[index]
+      const green = pixels.data[index + 1]
+      const blue = pixels.data[index + 2]
+      const key = `${red >> 3},${green >> 3},${blue >> 3}`
+      const sample = samples.get(key) ?? { count: 0, red: 0, green: 0, blue: 0 }
+      sample.count += 1
+      sample.red += red
+      sample.green += green
+      sample.blue += blue
+      samples.set(key, sample)
+    }
+  }
+
+  const dominant = [...samples.values()].sort((first, second) => second.count - first.count)[0]
+  if (!dominant) throw new Error('无法取色')
+  const target = [dominant.red, dominant.green, dominant.blue].map((value) => Math.round(value / dominant.count))
+  const lightness = (target[0] + target[1] + target[2]) / 3
+  const threshold = lightness > 235 ? 14 : lightness > 210 ? 25 : 52
+
+  for (let index = 0; index < pixels.data.length; index += 4) {
+    const red = pixels.data[index] - target[0]
+    const green = pixels.data[index + 1] - target[1]
+    const blue = pixels.data[index + 2] - target[2]
+    const distance = Math.sqrt(red * red * .3 + green * green * .59 + blue * blue * .11)
+    pixels.data[index] = 255
+    pixels.data[index + 1] = 255
+    pixels.data[index + 2] = 255
+    pixels.data[index + 3] = distance <= threshold ? 255 : 0
+  }
+  context.putImageData(pixels, 0, 0)
+  return canvas.toDataURL('image/png')
+}
+
 function cropImage(image: HTMLImageElement, crop: PercentCrop) {
   const bounds = {
     x: image.naturalWidth * crop.x / 100,
@@ -140,6 +190,7 @@ function App() {
   const [highlightCode, setHighlightCode] = useState<string | null>(null)
   const [highlightMask, setHighlightMask] = useState<string | null>(null)
   const [highlightMessage, setHighlightMessage] = useState('')
+  const [calibrationPoint, setCalibrationPoint] = useState<{ x: number; y: number } | null>(null)
   const maskRequest = useRef(0)
 
   const [sourceFile, setSourceFile] = useState<File | null>(null)
@@ -220,6 +271,7 @@ function App() {
     setHighlightCode(null)
     setHighlightMask(null)
     setHighlightMessage('')
+    setCalibrationPoint(null)
     setOpenProject(project)
   }
 
@@ -230,6 +282,7 @@ function App() {
       setHighlightCode(null)
       setHighlightMask(null)
       setHighlightMessage('')
+      setCalibrationPoint(null)
       return
     }
     const color = MARD_COLOR_BY_CODE.get(code)
@@ -237,16 +290,38 @@ function App() {
     const request = ++maskRequest.current
     setHighlightCode(code)
     setHighlightMask(null)
+    setCalibrationPoint(null)
     setHighlightMessage(`正在寻找 ${code}…`)
     try {
       const mask = await createColorMask(openProject.thumbnailUrl, color.hex)
       if (request !== maskRequest.current) return
       setHighlightMask(mask)
-      setHighlightMessage('')
+      setHighlightMessage('浅色不准？点一下图中的对应网格')
     } catch {
       if (request !== maskRequest.current) return
       setHighlightCode(null)
       setHighlightMessage('这张图纸无法在本地分析颜色。')
+    }
+  }
+
+  async function calibrateHighlight(event: ReactMouseEvent<HTMLDivElement>) {
+    if (!openProject?.thumbnailUrl || !highlightCode) return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const point = {
+      x: Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width)),
+      y: Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height)),
+    }
+    const request = ++maskRequest.current
+    setCalibrationPoint(point)
+    setHighlightMessage(`正在用点击的网格校准 ${highlightCode}…`)
+    try {
+      const mask = await createSampledColorMask(openProject.thumbnailUrl, point.x, point.y)
+      if (request !== maskRequest.current) return
+      setHighlightMask(mask)
+      setHighlightMessage(`已按点击位置校准 ${highlightCode}`)
+    } catch {
+      if (request !== maskRequest.current) return
+      setHighlightMessage('取色失败，请再点一下网格中间。')
     }
   }
 
@@ -483,7 +558,7 @@ function App() {
 
     {openProject?.thumbnailUrl && <div className="chart-viewer" role="dialog" aria-modal="true" aria-label={`查看 ${openProject.name}`}>
       <header className="viewer-header"><div><span>正在拼</span><strong>{openProject.name}</strong></div><button type="button" aria-label="关闭图纸" onClick={() => setOpenProject(null)}>×</button></header>
-      <div className="viewer-canvas"><div className="viewer-image-stage" style={{ width: `${viewerZoom}%` }}><img className={highlightMask ? 'dimmed-chart' : ''} src={openProject.thumbnailUrl} alt={openProject.name} />{highlightMask && <img className="highlight-chart" src={openProject.thumbnailUrl} alt="" style={{ WebkitMaskImage: `url(${highlightMask})`, maskImage: `url(${highlightMask})` }} />}</div></div>
+      <div className="viewer-canvas"><div className={`viewer-image-stage ${highlightCode ? 'calibrating' : ''}`} style={{ width: `${viewerZoom}%` }} onClick={(event) => void calibrateHighlight(event)}><img className={highlightMask ? 'dimmed-chart' : ''} src={openProject.thumbnailUrl} alt={openProject.name} />{highlightMask && <img className="highlight-chart" src={openProject.thumbnailUrl} alt="" style={{ WebkitMaskImage: `url(${highlightMask})`, maskImage: `url(${highlightMask})` }} />}{calibrationPoint && <i className="calibration-marker" style={{ left: `${calibrationPoint.x * 100}%`, top: `${calibrationPoint.y * 100}%` }} />}</div></div>
       <footer className="viewer-controls"><div className="viewer-palette" aria-label="选择要高亮的色号"><span>{highlightMessage || (highlightCode ? `已选 ${highlightCode}` : '点色号高亮')}</span><div>{openProject.bead_project_items.slice().sort((a, b) => compareCodes(a.code, b.code)).map((item) => { const code = normalizeCode(item.code); return <button className={highlightCode === code ? 'active' : ''} type="button" key={code} onClick={() => void selectHighlight(code)}><i style={{ background: MARD_COLOR_BY_CODE.get(code)?.hex }}></i><b>{code}</b><small>{item.count}</small></button> })}</div></div><div className="viewer-toolbar"><button type="button" onClick={() => setViewerZoom((zoom) => Math.max(50, zoom - 25))}>−</button><button className="zoom-readout" type="button" onClick={() => setViewerZoom(100)}>{viewerZoom}%</button><button type="button" onClick={() => setViewerZoom((zoom) => Math.min(300, zoom + 25))}>＋</button><button className="fit-button" type="button" onClick={() => setViewerZoom(100)}>适应宽度</button></div></footer>
     </div>}
   </main>
