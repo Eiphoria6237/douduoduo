@@ -511,7 +511,7 @@ function App() {
 
   return <main className="app-shell">
     <header className="site-header">
-      <button className="brand" type="button" onClick={() => setPage('scan')}><BeadMark /><span>豆多多</span></button>
+      <button className="brand" type="button" onClick={() => setPage('scan')}><img className="brand-icon" src="/app-icon.svg" alt="" /><span>豆多多</span></button>
       {session ? <div className="account-pill"><span>{session.user.email}</span><button type="button" onClick={() => void supabase?.auth.signOut()}>退出</button></div> : <span className="local-badge"><b></b>登录后使用 AI 识别</span>}
     </header>
 
@@ -524,23 +524,23 @@ function App() {
     {cloudMessage && <div className="cloud-message">{cloudMessage}</div>}
 
     {page === 'scan' && <>
-      <section className="hero" id="top"><p className="eyebrow">拼豆库存小助手</p><h1>一张图纸，<br /><em>理清所有豆子。</em></h1><p className="hero-copy">读取图纸底部的用量清单，由你确认后保存。新图纸默认进入“打算拼”，不会立刻扣库存。</p></section>
-      <section className="workspace" aria-labelledby="upload-title"><div className="section-heading"><div><span className="step">01</span><h2 id="upload-title">放入一张图纸</h2></div><p>JPG、PNG、截图均可</p></div>
-        {!imageUrl ? <button className="drop-zone" type="button" onClick={() => fileInput.current?.click()}><span className="upload-icon" aria-hidden="true">↑</span><strong>选择图纸图片</strong><span>从相册上传，或拖入这里</span><small>裁切清单将发送给 OpenAI；完整图纸保存后可直接打开</small></button> : <div className="scanner">
-          <div className="image-summary"><div><span className="file-label">已选图纸</span><strong>{fileName}</strong></div><button className="text-button" type="button" onClick={() => fileInput.current?.click()}>换一张</button></div>
+      <section className="hero scan-hero" id="top"><h1>识别<em>图纸</em></h1></section>
+      <section className="workspace" aria-labelledby="upload-title"><div className="section-heading"><div><span className="step">01</span><h2 id="upload-title">选择图纸</h2></div></div>
+        {!imageUrl ? <button className="drop-zone" type="button" onClick={() => fileInput.current?.click()}><span className="upload-icon" aria-hidden="true">↑</span><strong>选择图纸</strong></button> : <div className="scanner">
+          <div className="image-summary"><div><strong>{fileName}</strong></div><button className="text-button" type="button" onClick={() => fileInput.current?.click()}>更换</button></div>
           {isCropping ? <>
-            <div className="crop-instruction"><strong>圈出整块用量清单</strong><span>拖动选框，拉动边角调整大小，左右色号都要包进去。</span></div>
+            <div className="crop-instruction"><strong>框选底部用量清单</strong></div>
             <div className="crop-stage"><ReactCrop crop={cropSelection} onChange={(_pixelCrop, percentCrop) => setCropSelection(percentCrop)} minWidth={40} minHeight={24} keepSelection ruleOfThirds><img src={imageUrl} alt="请裁出用量清单" /></ReactCrop></div>
-            <button className="primary-button" type="button" onClick={() => void confirmCrop()}><span>确认清单范围</span><b>✓</b></button>
+            <button className="primary-button" type="button" onClick={() => void confirmCrop()}><span>确认范围</span><b>✓</b></button>
           </> : <>
             <div className="crop-preview">{cropUrl && <img src={cropUrl} alt="将被识别的用量清单区域" />}</div>
-            <div className="crop-ready"><span>AI 只接收上方裁切清单；保存时会另存完整高清图纸。</span><button className="text-button" type="button" onClick={() => setIsCropping(true)}>重新裁切</button></div>
-            <button className="primary-button" type="button" onClick={recognize} disabled={!cropUrl || progress.includes('正在')}><span>{progress.includes('正在') ? progress : '读取这块清单'}</span><b>→</b></button>
+            <div className="crop-ready"><button className="text-button" type="button" onClick={() => setIsCropping(true)}>重新裁切</button></div>
+            <button className="primary-button" type="button" onClick={recognize} disabled={!cropUrl || progress.includes('正在')}><span>{progress.includes('正在') ? progress : '识别清单'}</span><b>→</b></button>
           </>}
         </div>}
         <input ref={fileInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => handleFile(event.target.files?.[0])} />
       </section>
-      {imageUrl && <section className="review" aria-labelledby="review-title"><div className="section-heading compact"><div><span className="step">02</span><h2 id="review-title">确认盘点结果</h2></div><p>{progress || '调好区域后开始识别'}</p></div>{rows.length > 0 && <><label className="project-name">图纸名称<input value={projectName} onChange={(event) => setProjectName(event.target.value)} /></label><div className="table-head"><span>标准色号</span><span>颗数</span><span></span></div><div className="inventory-table">{rows.map((row) => <div className="inventory-row" key={row.id}><input aria-label="色号" value={row.code} placeholder="例如 C20" onChange={(event) => updateRow(row.id, 'code', event.target.value)} /><input aria-label="颗数" inputMode="numeric" value={row.count} placeholder="数量" onChange={(event) => updateRow(row.id, 'count', event.target.value)} /><button type="button" aria-label={`删除 ${row.code || '该项'}`} onClick={() => setRows((current) => current.filter((item) => item.id !== row.id))}>×</button></div>)}</div><button type="button" className="add-row" onClick={() => setRows((current) => [...current, newLine()])}>+ 补一项</button><div className="total-check"><label>图纸总计（选填） <input inputMode="numeric" value={total} placeholder="可不填" onChange={(event) => setTotal(event.target.value.replace(/\D/g, ''))} /> 颗</label><strong>已录入 {sum} 颗</strong>{total && delta !== 0 && <p>相差 <b>{Math.abs(delta)}</b> 颗：可能有一项被水印遮住。</p>}{total && delta === 0 && <p className="good">总计一致，可以保存。</p>}</div>{session ? <div className="save-panel"><button className="primary-button" type="button" onClick={saveProject}>保存为“打算拼” <b>→</b></button>{saveMessage && <p>{saveMessage}</p>}</div> : <p className="save-hint">登录后才能保存到“我的图纸”。</p>}</>}{ocrText && <details><summary>查看 AI 返回数据</summary><pre>{ocrText}</pre></details>}</section>}
+      {imageUrl && <section className="review" aria-labelledby="review-title"><div className="section-heading compact"><div><span className="step">02</span><h2 id="review-title">确认清单</h2></div><p>{progress}</p></div>{rows.length > 0 && <><label className="project-name">图纸名称<input value={projectName} onChange={(event) => setProjectName(event.target.value)} /></label><div className="table-head"><span>色号</span><span>颗数</span><span></span></div><div className="inventory-table">{rows.map((row) => <div className="inventory-row" key={row.id}><input aria-label="色号" value={row.code} placeholder="例如 C20" onChange={(event) => updateRow(row.id, 'code', event.target.value)} /><input aria-label="颗数" inputMode="numeric" value={row.count} placeholder="数量" onChange={(event) => updateRow(row.id, 'count', event.target.value)} /><button type="button" aria-label={`删除 ${row.code || '该项'}`} onClick={() => setRows((current) => current.filter((item) => item.id !== row.id))}>×</button></div>)}</div><button type="button" className="add-row" onClick={() => setRows((current) => [...current, newLine()])}>+ 添加</button><div className="total-check"><label>总颗数（选填） <input inputMode="numeric" value={total} placeholder="可不填" onChange={(event) => setTotal(event.target.value.replace(/\D/g, ''))} /></label><strong>已录入 {sum} 颗</strong>{total && delta !== 0 && <p>相差 <b>{Math.abs(delta)}</b> 颗</p>}{total && delta === 0 && <p className="good">总计一致</p>}</div>{session ? <div className="save-panel"><button className="primary-button" type="button" onClick={saveProject}>保存图纸 <b>→</b></button>{saveMessage && <p>{saveMessage}</p>}</div> : <p className="save-hint">登录后可保存。</p>}</>}{ocrText && <details><summary>AI 数据</summary><pre>{ocrText}</pre></details>}</section>}
       {!session && <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} />}
     </>}
 
