@@ -73,6 +73,20 @@
 .project-card.clickable{cursor:pointer;transition:transform .15s ease,box-shadow .15s ease}
 .project-card.clickable:hover{transform:translate(-1px,-1px);box-shadow:6px 6px 0 var(--ink)}
 .project-card.clickable:focus-visible{outline:3px solid var(--coral);outline-offset:4px}
+.project-groups{display:grid;gap:38px}
+.project-group{display:grid;gap:13px}
+.project-group-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;padding:0 3px}
+.project-group-heading>div{display:grid;gap:4px}
+.project-group-heading>div span{color:var(--coral);font:800 9px var(--mono);letter-spacing:.14em}
+.project-group-heading h2{margin:0;color:var(--ink);font:750 27px/1 var(--display);letter-spacing:-.045em}
+.group-progress{display:grid;width:min(230px,45%);grid-template-columns:auto 1fr auto;align-items:center;gap:8px}
+.group-progress strong{color:var(--ink);font:850 20px/1 var(--mono)}
+.group-progress strong small{color:var(--muted);font-size:10px}
+.group-progress>span{height:8px;overflow:hidden;border:1px solid var(--line);border-radius:100px;background:#e7e0d4}
+.group-progress>span i{display:block;height:100%;border-radius:inherit;background:var(--moss);transition:width .25s ease}
+.group-progress>b{color:var(--moss);font:800 10px var(--mono)}
+.project-card-controls{display:grid;justify-items:end;gap:7px}
+.group-select{max-width:130px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#f3eee3;color:var(--muted);font:700 10px var(--sans)}
 .viewer-open{overflow:hidden}
 .chart-viewer{position:fixed;z-index:100;inset:0;display:grid;grid-template-rows:auto 1fr auto;background:#24231f}
 .viewer-header{display:flex;align-items:center;justify-content:space-between;padding:max(14px,env(safe-area-inset-top)) 18px 13px;background:#fffdf7;border-bottom:1px solid #5c5a53}
@@ -103,3 +117,5 @@
 .viewer-toolbar button{min-height:42px;border:1px solid #77746b;border-radius:9px;background:#34332e;color:#fffdf7;font:800 18px var(--sans);cursor:pointer}
 .viewer-toolbar .zoom-readout{font:700 12px var(--mono)}
 .viewer-toolbar .fit-button{background:var(--moss);font-size:12px}
+
+@media(max-width:680px){.project-groups{gap:32px}.project-group-heading{align-items:flex-start;flex-direction:column;gap:10px}.group-progress{width:100%;grid-template-columns:auto 1fr auto}.project-card-controls{gap:5px}.group-select{max-width:105px}.status-select{max-width:105px}}

@@ -14,6 +14,7 @@ type SavedProject = {
   name: string
   total: number | null
   status: ProjectStatus
+  group_name: string | null
   image_path: string | null
   created_at: string
   bead_project_items: ProjectItem[]
@@ -209,7 +210,7 @@ function App() {
   async function loadProjects() {
     if (!supabase) return null
     const database = supabase
-    const { data, error } = await database.from('bead_projects').select('id,name,total,status,image_path,created_at,bead_project_items(code,count)').order('created_at', { ascending: false })
+    const { data, error } = await database.from('bead_projects').select('id,name,total,status,group_name,image_path,created_at,bead_project_items(code,count)').order('created_at', { ascending: false })
     if (error) { setCloudMessage(`图纸读取失败：${error.message}`); return null }
     const loaded = (data ?? []) as SavedProject[]
     await Promise.all(loaded.map(async (project) => {
@@ -440,6 +441,24 @@ function App() {
     if (error) { setProjects(previous); setCloudMessage(`状态更新失败：${error.message}`) }
   }
 
+  async function updateProjectGroup(projectId: string, groupName: string | null) {
+    if (!supabase) return
+    const normalized = groupName?.trim() || null
+    const previous = projects
+    setProjects((current) => current.map((project) => project.id === projectId ? { ...project, group_name: normalized } : project))
+    const { error } = await supabase.from('bead_projects').update({ group_name: normalized }).eq('id', projectId)
+    if (error) { setProjects(previous); setCloudMessage(`分组更新失败：${error.message}`) }
+  }
+
+  function chooseProjectGroup(projectId: string, value: string) {
+    if (value !== '__new__') {
+      void updateProjectGroup(projectId, value || null)
+      return
+    }
+    const name = window.prompt('新分组名称')?.trim()
+    if (name) void updateProjectGroup(projectId, name)
+  }
+
   async function setInventoryQuantity(code: string, quantity: number) {
     if (!supabase || !session) return
     const next = Math.max(0, Math.round(quantity))
@@ -484,6 +503,11 @@ function App() {
     items: inventoryValues.filter((item) => item.code.startsWith(series) && item.code.includes(inventoryQuery)),
     palette: MARD_COLORS.filter((color) => color.code.startsWith(series)),
   })).filter((group) => group.items.length > 0)
+  const savedGroupNames = [...new Set(projects.map((project) => project.group_name?.trim()).filter((name): name is string => Boolean(name)))].sort((first, second) => first.localeCompare(second, 'zh-CN', { numeric: true }))
+  const projectGroups = [...savedGroupNames, ''].map((groupName) => ({
+    name: groupName,
+    projects: projects.filter((project) => (project.group_name?.trim() || '') === groupName),
+  })).filter((group) => group.projects.length > 0)
 
   return <main className="app-shell">
     <header className="site-header">
@@ -553,7 +577,7 @@ function App() {
 
     {page === 'projects' && <section className="page-view">
       <div className="page-title"><div><p className="eyebrow">图纸与用量</p><h1>我的图纸</h1></div><div className="big-count">{projects.length}<small>张</small></div></div>
-      {!session ? <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} /> : projects.length === 0 ? <div className="empty-state"><BeadMark /><h2>还没有图纸</h2><p>识别并确认一张图纸后，它会出现在这里。</p><button type="button" onClick={() => setPage('scan')}>去识别第一张</button></div> : <div className="project-grid">{projects.map((project) => <article className={`project-card ${project.thumbnailUrl ? 'clickable' : ''}`} key={project.id} tabIndex={project.thumbnailUrl ? 0 : undefined} onClick={() => showProject(project)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showProject(project) } }}><div className="project-thumb">{project.thumbnailUrl ? <img src={project.thumbnailUrl} alt={`${project.name}缩略图`} /> : <div><BeadMark /><span>旧图纸无缩略图</span></div>}<span>{project.total ?? project.bead_project_items.reduce((value, item) => value + item.count, 0)} 颗</span></div><div className="project-body"><div className="project-heading"><div><small>{new Date(project.created_at).toLocaleDateString('zh-CN')}</small><h2>{project.name}</h2></div><select className={`status-select ${project.status}`} aria-label={`${project.name}状态`} value={project.status} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onChange={(event) => void updateProjectStatus(project.id, event.target.value as ProjectStatus)}>{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div><div className="project-items">{project.bead_project_items.sort((a, b) => normalizeCode(a.code).localeCompare(normalizeCode(b.code), undefined, { numeric: true })).map((item) => <span key={item.code}><i style={{ background: MARD_COLOR_BY_CODE.get(normalizeCode(item.code))?.hex }}></i><b>{normalizeCode(item.code)}</b>{item.count}</span>)}</div><p className="status-note">{project.status === 'planned' ? '已计入 pending，尚未扣库存' : project.status === 'completed' ? '已从实际剩余库存中扣除' : '不参与库存与 pending 计算'}</p></div></article>)}</div>}
+      {!session ? <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} /> : projects.length === 0 ? <div className="empty-state"><BeadMark /><h2>还没有图纸</h2><p>识别并确认一张图纸后，它会出现在这里。</p><button type="button" onClick={() => setPage('scan')}>去识别第一张</button></div> : <div className="project-groups">{projectGroups.map((group) => { const completed = group.projects.filter((project) => project.status === 'completed').length; const progress = Math.round(completed / group.projects.length * 100); return <section className="project-group" key={group.name || '__ungrouped'}><div className="project-group-heading"><div><span>{group.name ? 'COLLECTION' : 'INBOX'}</span><h2>{group.name || '未分组'}</h2></div><div className="group-progress"><strong>{completed}<small>/{group.projects.length}</small></strong><span><i style={{ width: `${progress}%` }}></i></span><b>{progress}%</b></div></div><div className="project-grid">{group.projects.map((project) => <article className={`project-card ${project.thumbnailUrl ? 'clickable' : ''}`} key={project.id} tabIndex={project.thumbnailUrl ? 0 : undefined} onClick={() => showProject(project)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showProject(project) } }}><div className="project-thumb">{project.thumbnailUrl ? <img src={project.thumbnailUrl} alt={`${project.name}缩略图`} /> : <div><BeadMark /><span>旧图纸无缩略图</span></div>}<span>{project.total ?? project.bead_project_items.reduce((value, item) => value + item.count, 0)} 颗</span></div><div className="project-body"><div className="project-heading"><div><small>{new Date(project.created_at).toLocaleDateString('zh-CN')}</small><h2>{project.name}</h2></div><div className="project-card-controls"><select className="group-select" aria-label={`${project.name}分组`} value={project.group_name || ''} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onChange={(event) => chooseProjectGroup(project.id, event.target.value)}><option value="">未分组</option>{savedGroupNames.map((name) => <option key={name} value={name}>{name}</option>)}<option value="__new__">＋ 新建分组</option></select><select className={`status-select ${project.status}`} aria-label={`${project.name}状态`} value={project.status} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onChange={(event) => void updateProjectStatus(project.id, event.target.value as ProjectStatus)}>{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div></div><div className="project-items">{project.bead_project_items.slice().sort((a, b) => compareCodes(normalizeCode(a.code), normalizeCode(b.code))).map((item) => <span key={item.code}><i style={{ background: MARD_COLOR_BY_CODE.get(normalizeCode(item.code))?.hex }}></i><b>{normalizeCode(item.code)}</b>{item.count}</span>)}</div><p className="status-note">{project.status === 'planned' ? '已计入 pending，尚未扣库存' : project.status === 'completed' ? '已从实际剩余库存中扣除' : '不参与库存与 pending 计算'}</p></div></article>)}</div></section> })}</div>}
     </section>}
 
     {openProject?.thumbnailUrl && <div className="chart-viewer" role="dialog" aria-modal="true" aria-label={`查看 ${openProject.name}`}>

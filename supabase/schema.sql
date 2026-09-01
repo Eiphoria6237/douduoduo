@@ -9,6 +9,7 @@ create table if not exists public.bead_projects (
 
 alter table public.bead_projects
   add column if not exists status text not null default 'planned',
+  add column if not exists group_name text,
   add column if not exists image_path text;
 
 alter table public.bead_projects drop constraint if exists bead_projects_status_check;
