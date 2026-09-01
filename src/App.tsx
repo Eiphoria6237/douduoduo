@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { createWorker, PSM } from 'tesseract.js'
 import ReactCrop, { type PercentCrop } from 'react-image-crop'
 import { MARD_COLOR_BY_CODE, MARD_COLORS } from './data/mardColors'
 import { supabase } from './lib/supabase'
@@ -22,8 +21,7 @@ type SavedProject = {
 }
 type InventoryRecord = { code: string; quantity: number }
 type Page = 'scan' | 'inventory' | 'projects'
-type OcrWord = { text: string; x: number; y: number }
-type LegendSwatch = OcrWord & { x0: number; y0: number; x1: number; y1: number }
+type RecognitionItem = { code: string; count: number }
 
 const STATUS_LABELS: Record<ProjectStatus, string> = {
   planned: '打算拼',
@@ -83,155 +81,6 @@ function cropImage(image: HTMLImageElement, crop: PercentCrop) {
   return canvas.toDataURL('image/png')
 }
 
-function rgbDistance(first: [number, number, number], second: [number, number, number]) {
-  return (first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2 + (first[2] - second[2]) ** 2
-}
-
-const MARD_RGB = MARD_COLORS.map((color) => ({
-  code: color.code,
-  rgb: [Number.parseInt(color.hex.slice(1, 3), 16), Number.parseInt(color.hex.slice(3, 5), 16), Number.parseInt(color.hex.slice(5, 7), 16)] as [number, number, number],
-}))
-
-async function detectLegendSwatches(url: string): Promise<LegendSwatch[]> {
-  const image = await loadImage(url)
-  const canvas = document.createElement('canvas')
-  canvas.width = image.naturalWidth
-  canvas.height = image.naturalHeight
-  const context = canvas.getContext('2d', { willReadFrequently: true })!
-  context.drawImage(image, 0, 0)
-  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
-  const step = Math.max(2, Math.ceil(canvas.width / 1000))
-  const width = Math.ceil(canvas.width / step)
-  const height = Math.ceil(canvas.height / step)
-  const mask = new Uint8Array(width * height)
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const source = ((Math.min(canvas.height - 1, y * step) * canvas.width) + Math.min(canvas.width - 1, x * step)) * 4
-      const red = pixels[source]
-      const green = pixels[source + 1]
-      const blue = pixels[source + 2]
-      const brightness = (red + green + blue) / 3
-      if (brightness < 244 || Math.max(red, green, blue) - Math.min(red, green, blue) > 10) mask[y * width + x] = 1
-    }
-  }
-
-  const visited = new Uint8Array(mask.length)
-  const components: Array<{ x0: number; y0: number; x1: number; y1: number; area: number }> = []
-  for (let start = 0; start < mask.length; start += 1) {
-    if (!mask[start] || visited[start]) continue
-    const queue = [start]
-    visited[start] = 1
-    let cursor = 0
-    let x0 = width
-    let y0 = height
-    let x1 = 0
-    let y1 = 0
-    while (cursor < queue.length) {
-      const point = queue[cursor++]
-      const x = point % width
-      const y = Math.floor(point / width)
-      x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y)
-      const neighbors = [point - 1, point + 1, point - width, point + width]
-      neighbors.forEach((next) => {
-        if (next < 0 || next >= mask.length || visited[next] || !mask[next]) return
-        const nextX = next % width
-        if (Math.abs(nextX - x) > 1) return
-        visited[next] = 1
-        queue.push(next)
-      })
-    }
-    const componentWidth = x1 - x0 + 1
-    const componentHeight = y1 - y0 + 1
-    const coverage = queue.length / (componentWidth * componentHeight)
-    if (componentWidth >= width * 0.018 && componentWidth <= width * 0.16 && componentHeight >= 8 && componentHeight <= height * 0.8 && componentWidth / componentHeight >= 0.45 && componentWidth / componentHeight <= 2.3 && coverage >= 0.04) components.push({ x0, y0, x1, y1, area: queue.length })
-  }
-
-  const rows: typeof components[] = []
-  components.sort((a, b) => (a.y0 + a.y1) - (b.y0 + b.y1)).forEach((component) => {
-    const center = (component.y0 + component.y1) / 2
-    const row = rows.find((candidate) => Math.abs((candidate.reduce((sum, item) => sum + item.y0 + item.y1, 0) / candidate.length / 2) - center) < Math.max(6, height * 0.08))
-    if (row) row.push(component)
-    else rows.push([component])
-  })
-  const candidateRows = rows.filter((row) => row.length >= 2 && row.length <= 40).map((row) => {
-    const widths = row.map((item) => item.x1 - item.x0 + 1).sort((a, b) => a - b)
-    const heights = row.map((item) => item.y1 - item.y0 + 1).sort((a, b) => a - b)
-    const medianWidth = widths[Math.floor(widths.length / 2)]
-    const medianHeight = heights[Math.floor(heights.length / 2)]
-    return row.filter((item) => {
-      const itemWidth = item.x1 - item.x0 + 1
-      const itemHeight = item.y1 - item.y0 + 1
-      return itemWidth >= medianWidth * 0.55 && itemWidth <= medianWidth * 1.75 && itemHeight >= medianHeight * 0.55 && itemHeight <= medianHeight * 1.75
-    })
-  }).filter((row) => row.length >= 2)
-  const largestAverageArea = Math.max(0, ...candidateRows.map((row) => row.reduce((sum, item) => sum + item.area, 0) / row.length))
-  const swatchRow = candidateRows
-    .filter((row) => row.reduce((sum, item) => sum + item.area, 0) / row.length >= largestAverageArea * 0.2)
-    .sort((a, b) => Math.max(...b.map((item) => item.y1)) - Math.max(...a.map((item) => item.y1)))[0]
-  if (!swatchRow) return []
-
-  return swatchRow.sort((a, b) => a.x0 - b.x0).map((component) => {
-    const samples: Array<[number, number, number]> = []
-    const left = Math.round((component.x0 * 0.7 + component.x1 * 0.3) * step)
-    const right = Math.round((component.x0 * 0.3 + component.x1 * 0.7) * step)
-    const top = Math.round((component.y0 * 0.7 + component.y1 * 0.3) * step)
-    const bottom = Math.round((component.y0 * 0.3 + component.y1 * 0.7) * step)
-    for (let y = top; y <= bottom; y += Math.max(1, step)) for (let x = left; x <= right; x += Math.max(1, step)) {
-      const index = (Math.min(canvas.height - 1, y) * canvas.width + Math.min(canvas.width - 1, x)) * 4
-      samples.push([pixels[index], pixels[index + 1], pixels[index + 2]])
-    }
-    const median = [0, 1, 2].map((channel) => samples.map((sample) => sample[channel]).sort((a, b) => a - b)[Math.floor(samples.length / 2)]) as [number, number, number]
-    const color = MARD_RGB.reduce((best, candidate) => rgbDistance(candidate.rgb, median) < rgbDistance(best.rgb, median) ? candidate : best)
-    return {
-      text: color.code,
-      x: ((component.x0 + component.x1) / 2) * step,
-      y: ((component.y0 + component.y1) / 2) * step,
-      x0: component.x0 * step,
-      y0: component.y0 * step,
-      x1: Math.min(canvas.width, (component.x1 + 1) * step),
-      y1: Math.min(canvas.height, (component.y1 + 1) * step),
-    }
-  })
-}
-
-function makeOcrTile(image: HTMLImageElement, rectangle: { left: number; top: number; width: number; height: number }, mode: 'swatch' | 'number') {
-  const source = document.createElement('canvas')
-  source.width = Math.max(1, Math.round(rectangle.width))
-  source.height = Math.max(1, Math.round(rectangle.height))
-  const sourceContext = source.getContext('2d', { willReadFrequently: true })!
-  sourceContext.drawImage(image, rectangle.left, rectangle.top, rectangle.width, rectangle.height, 0, 0, source.width, source.height)
-  const imageData = sourceContext.getImageData(0, 0, source.width, source.height)
-  const pixels = imageData.data
-  const medians = [0, 1, 2].map((channel) => {
-    const values: number[] = []
-    for (let index = channel; index < pixels.length; index += 4) values.push(pixels[index])
-    values.sort((a, b) => a - b)
-    return values[Math.floor(values.length / 2)]
-  })
-  for (let index = 0; index < pixels.length; index += 4) {
-    const isInk = mode === 'swatch'
-      ? Math.sqrt((pixels[index] - medians[0]) ** 2 + (pixels[index + 1] - medians[1]) ** 2 + (pixels[index + 2] - medians[2]) ** 2) > 42
-      : (pixels[index] + pixels[index + 1] + pixels[index + 2]) / 3 < 170
-    pixels[index] = isInk ? 0 : 255
-    pixels[index + 1] = isInk ? 0 : 255
-    pixels[index + 2] = isInk ? 0 : 255
-    pixels[index + 3] = 255
-  }
-  sourceContext.putImageData(imageData, 0, 0)
-
-  const scale = Math.max(4, Math.ceil(260 / source.width))
-  const tile = document.createElement('canvas')
-  tile.width = source.width * scale + 80
-  tile.height = source.height * scale + 80
-  const tileContext = tile.getContext('2d')!
-  tileContext.fillStyle = '#fff'
-  tileContext.fillRect(0, 0, tile.width, tile.height)
-  tileContext.imageSmoothingEnabled = false
-  tileContext.drawImage(source, 0, 0, source.width, source.height, 40, 40, source.width * scale, source.height * scale)
-  return tile.toDataURL('image/png')
-}
-
 async function createThumbnail(file: File) {
   const url = URL.createObjectURL(file)
   try {
@@ -248,71 +97,6 @@ async function createThumbnail(file: File) {
   } finally {
     URL.revokeObjectURL(url)
   }
-}
-
-function recognizedMardCode(value: string) {
-  const code = normalizeCode(value.replace(/[^A-Z0-9]/gi, ''))
-  return MARD_COLOR_BY_CODE.has(code) ? code : ''
-}
-
-function inventoryLines(pairs: Array<[string, string]>) {
-  const merged = new Map<string, number>()
-  pairs.forEach(([code, count]) => {
-    const quantity = Number(count)
-    if (code && Number.isInteger(quantity) && quantity >= 0) merged.set(code, (merged.get(code) ?? 0) + quantity)
-  })
-  return [...merged].map(([code, count]) => ({ id: crypto.randomUUID(), code, count: String(count) }))
-}
-
-function assistedLines(codes: OcrWord[], counts: OcrWord[]) {
-  const sortedCounts = [...counts].sort((a, b) => a.x - b.x)
-  return [...codes].sort((a, b) => a.x - b.x).map((code, index) => ({
-    id: crypto.randomUUID(),
-    code: code.text,
-    count: sortedCounts.length === codes.length ? sortedCounts[index].text : '',
-  }))
-}
-
-function extractOcrWords(blocks: Array<{ paragraphs: Array<{ lines: Array<{ words: Array<{ text: string; bbox: { x0: number; y0: number; x1: number } }> }> }> }> | null): OcrWord[] {
-  return blocks?.flatMap((block) => block.paragraphs.flatMap((paragraph) => paragraph.lines.flatMap((line) => line.words.map((word) => ({ text: word.text, x: (word.bbox.x0 + word.bbox.x1) / 2, y: word.bbox.y0 }))))) ?? []
-}
-
-function groupWordsByRow<T extends { y: number }>(words: T[]) {
-  const rows: T[][] = []
-  words.sort((a, b) => a.y - b.y).forEach((word) => {
-    const row = rows.find((candidate) => Math.abs(candidate.reduce((sum, item) => sum + item.y, 0) / candidate.length - word.y) < 24)
-    if (row) row.push(word)
-    else rows.push([word])
-  })
-  return rows
-}
-
-function parseOcrText(text: string, words: OcrWord[] = []) {
-  const codeRows = groupWordsByRow(words.map((word) => ({ ...word, code: recognizedMardCode(word.text) })).filter((word) => word.code))
-  const positionedCodes = (codeRows.filter((row) => row.length > 1).sort((a, b) => Math.max(...b.map((word) => word.y)) - Math.max(...a.map((word) => word.y)))[0] ?? []).sort((a, b) => a.x - b.x).filter((word, index, all) => !all.slice(0, index).some((candidate) => Math.abs(candidate.x - word.x) < 40))
-  if (positionedCodes.length > 1) {
-    const codeY = Math.max(...positionedCodes.map((code) => code.y))
-    const countRows = groupWordsByRow(words.filter((word) => /^\d{1,4}$/.test(word.text.trim()) && word.y > codeY + 8))
-    const counts = (countRows.sort((a, b) => Math.abs(a.length - positionedCodes.length) - Math.abs(b.length - positionedCodes.length) || Math.min(...a.map((word) => word.y)) - Math.min(...b.map((word) => word.y)))[0] ?? []).sort((a, b) => a.x - b.x)
-    if (positionedCodes.length === counts.length) return inventoryLines(positionedCodes.map((code, index) => [code.code, counts[index].text]))
-  }
-
-  const pieces = text.toUpperCase().replace(/[|]/g, ' ').match(/[A-Z]{1,2}\s*\d{1,2}|(?<![A-Z0-9])\d{1,4}(?![A-Z0-9])/g) ?? []
-  const codes = pieces.map(recognizedMardCode).filter(Boolean)
-  const counts = pieces.filter((piece) => /^\d{1,4}$/.test(piece))
-  if (codes.length > 1 && codes.length === counts.length) return inventoryLines(codes.map((code, index) => [code, counts[index]]))
-
-  const pairs: Array<[string, string]> = []
-  let code = ''
-  for (const piece of pieces) {
-    const recognized = recognizedMardCode(piece)
-    if (recognized) code = recognized
-    else if (code && /^\d{1,4}$/.test(piece)) {
-      pairs.push([code, piece])
-      code = ''
-    }
-  }
-  return inventoryLines(pairs)
 }
 
 function AuthPanel({ email, message, onEmail, onSend }: { email: string; message: string; onEmail: (value: string) => void; onSend: () => void }) {
@@ -429,53 +213,36 @@ function App() {
 
   async function recognize() {
     if (!cropUrl) return
-    setProgress('正在加载本地识别器…')
+    if (!supabase) {
+      setProgress('尚未配置 Supabase，无法使用 AI 识别。')
+      return
+    }
+    if (!session) {
+      setProgress('请先登录，再使用 AI 识别。')
+      return
+    }
+    setProgress('正在使用 AI 读取清单…')
     try {
-      const worker = await createWorker('eng', 1, { logger: (message) => { if (message.status === 'recognizing text') setProgress(`正在读取清单… ${Math.round(message.progress * 100)}%`) } })
-      await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789()[] ', tessedit_pageseg_mode: PSM.SPARSE_TEXT, preserve_interword_spaces: '1' })
-      const [result, swatches, cropImageElement] = await Promise.all([
-        worker.recognize(cropUrl, {}, { text: true, blocks: true }),
-        detectLegendSwatches(cropUrl),
-        loadImage(cropUrl),
-      ])
-      let swatchCodes: OcrWord[] = swatches
-      let quantityWords: OcrWord[] = []
-      const detailText: string[] = []
-      if (swatches.length > 1) {
-        await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', tessedit_pageseg_mode: PSM.SINGLE_WORD })
-        swatchCodes = []
-        for (const swatch of swatches) {
-          const insetX = Math.max(1, Math.round((swatch.x1 - swatch.x0) * 0.12))
-          const insetY = Math.max(1, Math.round((swatch.y1 - swatch.y0) * 0.12))
-          const codeTile = makeOcrTile(cropImageElement, { left: swatch.x0 + insetX, top: swatch.y0 + insetY, width: swatch.x1 - swatch.x0 - insetX * 2, height: swatch.y1 - swatch.y0 - insetY * 2 }, 'swatch')
-          const codeResult = await worker.recognize(codeTile, {}, { text: true })
-          const code = recognizedMardCode(codeResult.data.text) || swatch.text
-          swatchCodes.push({ text: code, x: swatch.x, y: swatch.y })
-          detailText.push(`${codeResult.data.text.trim() || '?'}>${code}`)
-        }
+      const { data, error } = await supabase.functions.invoke<{ items?: unknown }>('recognize-legend', {
+        body: { imageDataUrl: cropUrl },
+      })
+      if (error) throw error
+      if (!Array.isArray(data?.items)) throw new Error('服务返回格式不正确')
 
-        await worker.setParameters({ tessedit_char_whitelist: '0123456789 ', tessedit_pageseg_mode: PSM.SINGLE_LINE, preserve_interword_spaces: '1' })
-        const quantityTop = Math.round(cropImageElement.naturalHeight * 0.5)
-        const quantityResult = await worker.recognize(cropUrl, { rectangle: { left: 0, top: quantityTop, width: cropImageElement.naturalWidth, height: cropImageElement.naturalHeight - quantityTop } }, { text: true, blocks: true })
-        const candidates = [
-          ...extractOcrWords(quantityResult.data.blocks),
-          ...extractOcrWords(result.data.blocks).filter((word) => word.y >= quantityTop),
-        ].filter((word) => /^\d{1,4}$/.test(word.text.trim()))
-        quantityWords = swatches.flatMap((swatch) => {
-          const nearby = candidates.filter((candidate) => swatches.reduce((closest, other) => Math.abs(candidate.x - other.x) < Math.abs(candidate.x - closest.x) ? other : closest) === swatch)
-          const best = nearby.sort((a, b) => b.text.trim().length - a.text.trim().length)[0]
-          return best ? [{ text: best.text.trim(), x: swatch.x, y: quantityTop + 30 }] : []
-        })
-        detailText.push(`数量:${quantityResult.data.text.trim() || '?'}`)
-      }
-      await worker.terminate()
-      const parsed = parseOcrText(result.data.text, extractOcrWords(result.data.blocks))
-      const recognized = swatchCodes.length > 1 ? assistedLines(swatchCodes, quantityWords) : parsed
-      setOcrText(`${result.data.text}\n逐项识别：${detailText.join(' / ') || '无'}\n色块检测：${swatches.map((swatch) => swatch.text).join('、') || '无'}`)
-      setRows(recognized.length ? recognized : [newLine()])
-      setProgress(recognized.length ? `已读出 ${recognized.length} 种颜色，请逐项确认。` : '没有可靠读出结果，请在下方手动补录。')
-    } catch {
-      setProgress('识别器未能启动，请检查网络后重试。')
+      const seen = new Set<string>()
+      const recognized = data.items.flatMap((value): RecognitionItem[] => {
+        if (!value || typeof value !== 'object') return []
+        const item = value as Partial<RecognitionItem>
+        const code = normalizeCode(typeof item.code === 'string' ? item.code : '')
+        if (!MARD_COLOR_BY_CODE.has(code) || !Number.isInteger(item.count) || Number(item.count) < 0 || seen.has(code)) return []
+        seen.add(code)
+        return [{ code, count: Number(item.count) }]
+      })
+      setOcrText(JSON.stringify({ items: recognized }, null, 2))
+      setRows(recognized.length ? recognized.map((item) => ({ id: crypto.randomUUID(), code: item.code, count: String(item.count) })) : [newLine()])
+      setProgress(recognized.length ? `AI 已读出 ${recognized.length} 种颜色，请逐项确认。` : 'AI 没有读出可靠结果，请重新裁切或手动补录。')
+    } catch (error) {
+      setProgress(`AI 识别失败：${error instanceof Error ? error.message : '请稍后重试'}`)
     }
   }
 
@@ -564,7 +331,7 @@ function App() {
   return <main className="app-shell">
     <header className="site-header">
       <button className="brand" type="button" onClick={() => setPage('scan')}><BeadMark /><span>豆多多</span></button>
-      {session ? <div className="account-pill"><span>{session.user.email}</span><button type="button" onClick={() => void supabase?.auth.signOut()}>退出</button></div> : <span className="local-badge"><b></b>识别在本机完成</span>}
+      {session ? <div className="account-pill"><span>{session.user.email}</span><button type="button" onClick={() => void supabase?.auth.signOut()}>退出</button></div> : <span className="local-badge"><b></b>登录后使用 AI 识别</span>}
     </header>
 
     <nav className="app-nav" aria-label="主要功能">
@@ -578,7 +345,7 @@ function App() {
     {page === 'scan' && <>
       <section className="hero" id="top"><p className="eyebrow">拼豆库存小助手</p><h1>一张图纸，<br /><em>理清所有豆子。</em></h1><p className="hero-copy">读取图纸底部的用量清单，由你确认后保存。新图纸默认进入“打算拼”，不会立刻扣库存。</p></section>
       <section className="workspace" aria-labelledby="upload-title"><div className="section-heading"><div><span className="step">01</span><h2 id="upload-title">放入一张图纸</h2></div><p>JPG、PNG、截图均可</p></div>
-        {!imageUrl ? <button className="drop-zone" type="button" onClick={() => fileInput.current?.click()}><span className="upload-icon" aria-hidden="true">↑</span><strong>选择图纸图片</strong><span>从相册上传，或拖入这里</span><small>识别在本机完成；保存时同步压缩缩略图</small></button> : <div className="scanner">
+        {!imageUrl ? <button className="drop-zone" type="button" onClick={() => fileInput.current?.click()}><span className="upload-icon" aria-hidden="true">↑</span><strong>选择图纸图片</strong><span>从相册上传，或拖入这里</span><small>裁切清单将发送给 OpenAI；保存时同步压缩缩略图</small></button> : <div className="scanner">
           <div className="image-summary"><div><span className="file-label">已选图纸</span><strong>{fileName}</strong></div><button className="text-button" type="button" onClick={() => fileInput.current?.click()}>换一张</button></div>
           {isCropping ? <>
             <div className="crop-instruction"><strong>圈出整块用量清单</strong><span>拖动选框，拉动边角调整大小，左右色号都要包进去。</span></div>
@@ -586,13 +353,13 @@ function App() {
             <button className="primary-button" type="button" onClick={() => void confirmCrop()}><span>确认清单范围</span><b>✓</b></button>
           </> : <>
             <div className="crop-preview">{cropUrl && <img src={cropUrl} alt="将被识别的用量清单区域" />}</div>
-            <div className="crop-ready"><span>识别只使用上方清单；保存时仍使用完整原图作为缩略图。</span><button className="text-button" type="button" onClick={() => setIsCropping(true)}>重新裁切</button></div>
+            <div className="crop-ready"><span>AI 只接收上方裁切清单；保存时仍使用完整原图作为缩略图。</span><button className="text-button" type="button" onClick={() => setIsCropping(true)}>重新裁切</button></div>
             <button className="primary-button" type="button" onClick={recognize} disabled={!cropUrl || progress.includes('正在')}><span>{progress.includes('正在') ? progress : '读取这块清单'}</span><b>→</b></button>
           </>}
         </div>}
         <input ref={fileInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => handleFile(event.target.files?.[0])} />
       </section>
-      {imageUrl && <section className="review" aria-labelledby="review-title"><div className="section-heading compact"><div><span className="step">02</span><h2 id="review-title">确认盘点结果</h2></div><p>{progress || '调好区域后开始识别'}</p></div>{rows.length > 0 && <><label className="project-name">图纸名称<input value={projectName} onChange={(event) => setProjectName(event.target.value)} /></label><div className="table-head"><span>标准色号</span><span>颗数</span><span></span></div><div className="inventory-table">{rows.map((row) => <div className="inventory-row" key={row.id}><input aria-label="色号" value={row.code} placeholder="例如 C20" onChange={(event) => updateRow(row.id, 'code', event.target.value)} /><input aria-label="颗数" inputMode="numeric" value={row.count} placeholder="数量" onChange={(event) => updateRow(row.id, 'count', event.target.value)} /><button type="button" aria-label={`删除 ${row.code || '该项'}`} onClick={() => setRows((current) => current.filter((item) => item.id !== row.id))}>×</button></div>)}</div><button type="button" className="add-row" onClick={() => setRows((current) => [...current, newLine()])}>+ 补一项</button><div className="total-check"><label>图纸总计（选填） <input inputMode="numeric" value={total} placeholder="可不填" onChange={(event) => setTotal(event.target.value.replace(/\D/g, ''))} /> 颗</label><strong>已录入 {sum} 颗</strong>{total && delta !== 0 && <p>相差 <b>{Math.abs(delta)}</b> 颗：可能有一项被水印遮住。</p>}{total && delta === 0 && <p className="good">总计一致，可以保存。</p>}</div>{session ? <div className="save-panel"><button className="primary-button" type="button" onClick={saveProject}>保存为“打算拼” <b>→</b></button>{saveMessage && <p>{saveMessage}</p>}</div> : <p className="save-hint">登录后才能保存到“我的图纸”。</p>}</>}{ocrText && <details><summary>查看原始 OCR 文本</summary><pre>{ocrText}</pre></details>}</section>}
+      {imageUrl && <section className="review" aria-labelledby="review-title"><div className="section-heading compact"><div><span className="step">02</span><h2 id="review-title">确认盘点结果</h2></div><p>{progress || '调好区域后开始识别'}</p></div>{rows.length > 0 && <><label className="project-name">图纸名称<input value={projectName} onChange={(event) => setProjectName(event.target.value)} /></label><div className="table-head"><span>标准色号</span><span>颗数</span><span></span></div><div className="inventory-table">{rows.map((row) => <div className="inventory-row" key={row.id}><input aria-label="色号" value={row.code} placeholder="例如 C20" onChange={(event) => updateRow(row.id, 'code', event.target.value)} /><input aria-label="颗数" inputMode="numeric" value={row.count} placeholder="数量" onChange={(event) => updateRow(row.id, 'count', event.target.value)} /><button type="button" aria-label={`删除 ${row.code || '该项'}`} onClick={() => setRows((current) => current.filter((item) => item.id !== row.id))}>×</button></div>)}</div><button type="button" className="add-row" onClick={() => setRows((current) => [...current, newLine()])}>+ 补一项</button><div className="total-check"><label>图纸总计（选填） <input inputMode="numeric" value={total} placeholder="可不填" onChange={(event) => setTotal(event.target.value.replace(/\D/g, ''))} /> 颗</label><strong>已录入 {sum} 颗</strong>{total && delta !== 0 && <p>相差 <b>{Math.abs(delta)}</b> 颗：可能有一项被水印遮住。</p>}{total && delta === 0 && <p className="good">总计一致，可以保存。</p>}</div>{session ? <div className="save-panel"><button className="primary-button" type="button" onClick={saveProject}>保存为“打算拼” <b>→</b></button>{saveMessage && <p>{saveMessage}</p>}</div> : <p className="save-hint">登录后才能保存到“我的图纸”。</p>}</>}{ocrText && <details><summary>查看 AI 返回数据</summary><pre>{ocrText}</pre></details>}</section>}
       {!session && <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} />}
     </>}
 

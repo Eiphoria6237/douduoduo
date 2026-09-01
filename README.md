@@ -1,4 +1,20 @@
-# React + TypeScript + Vite
+# 豆多多
+
+## OpenAI 清单识别
+
+裁切后的清单由浏览器直接提交给 Supabase Edge Function，再由函数调用 OpenAI Responses API。图片不会写入 Supabase Storage；只有用户保存图纸时，现有逻辑才会上传完整原图的压缩缩略图。
+
+识别接口要求用户已登录。部署前配置服务端密钥并发布函数：
+
+```bash
+supabase secrets set OPENAI_API_KEY=你的_OpenAI_API_Key
+supabase secrets set OPENAI_MODEL=gpt-5.4
+supabase functions deploy recognize-legend
+```
+
+`OPENAI_MODEL` 可省略，默认使用 `gpt-5.4`。OpenAI API 费用与 ChatGPT Plus 分开结算。不要把 `OPENAI_API_KEY` 放进 `.env`、前端代码或 Supabase 数据表。
+
+## 本地开发
 
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
