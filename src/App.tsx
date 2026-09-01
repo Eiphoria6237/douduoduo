@@ -68,11 +68,11 @@ function cropImage(image: HTMLImageElement, crop: PercentCrop) {
   return canvas.toDataURL('image/png')
 }
 
-async function createThumbnail(file: File) {
+async function createWorkingImage(file: File) {
   const url = URL.createObjectURL(file)
   try {
     const image = await loadImage(url)
-    const scale = Math.min(1, 1200 / Math.max(image.naturalWidth, image.naturalHeight))
+    const scale = Math.min(1, 3200 / Math.max(image.naturalWidth, image.naturalHeight))
     const canvas = document.createElement('canvas')
     canvas.width = Math.round(image.naturalWidth * scale)
     canvas.height = Math.round(image.naturalHeight * scale)
@@ -80,7 +80,7 @@ async function createThumbnail(file: File) {
     context.fillStyle = '#fff'
     context.fillRect(0, 0, canvas.width, canvas.height)
     context.drawImage(image, 0, 0, canvas.width, canvas.height)
-    return await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('缩略图生成失败')), 'image/jpeg', 0.82))
+    return await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('图纸生成失败')), 'image/jpeg', 0.9))
   } finally {
     URL.revokeObjectURL(url)
   }
@@ -107,6 +107,8 @@ function App() {
   const [inventory, setInventory] = useState<InventoryRecord[]>([])
   const [inventorySearch, setInventorySearch] = useState('')
   const [cloudMessage, setCloudMessage] = useState('')
+  const [openProject, setOpenProject] = useState<SavedProject | null>(null)
+  const [viewerZoom, setViewerZoom] = useState(100)
 
   const [sourceFile, setSourceFile] = useState<File | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
@@ -168,6 +170,23 @@ function App() {
   }, [])
 
   useEffect(() => { if (session) void loadCloudData(session) }, [session])
+
+  useEffect(() => {
+    if (!openProject) return
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpenProject(null) }
+    document.body.classList.add('viewer-open')
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.body.classList.remove('viewer-open')
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [openProject])
+
+  function showProject(project: SavedProject) {
+    if (!project.thumbnailUrl) return
+    setViewerZoom(100)
+    setOpenProject(project)
+  }
 
   function handleFile(file?: File) {
     if (!file || !file.type.startsWith('image/')) return
@@ -248,7 +267,7 @@ function App() {
     })
     const items = [...merged].map(([code, count]) => ({ code, count }))
     if (!items.length) { setSaveMessage('至少补录一项色号和数量后才能保存。'); return }
-    setSaveMessage('正在保存图纸和缩略图…')
+    setSaveMessage('正在保存用量和高清图纸…')
     const { data: project, error } = await supabase.from('bead_projects').insert({ user_id: session.user.id, name: projectName.trim() || '未命名图纸', total: total ? Number(total) : null, status: 'planned' }).select('id').single()
     if (error || !project) { setSaveMessage(`保存失败：${error?.message ?? '未知错误'}`); return }
     const { error: itemsError } = await supabase.from('bead_project_items').insert(items.map((item) => ({ ...item, project_id: project.id })))
@@ -259,14 +278,14 @@ function App() {
     }
     if (sourceFile) {
       try {
-        const thumbnail = await createThumbnail(sourceFile)
-        const imagePath = `${session.user.id}/${project.id}/thumbnail.jpg`
-        const { error: uploadError } = await supabase.storage.from('project-images').upload(imagePath, thumbnail, { contentType: 'image/jpeg', upsert: true })
+        const workingImage = await createWorkingImage(sourceFile)
+        const imagePath = `${session.user.id}/${project.id}/chart.jpg`
+        const { error: uploadError } = await supabase.storage.from('project-images').upload(imagePath, workingImage, { contentType: 'image/jpeg', upsert: true })
         if (uploadError) throw uploadError
         const { error: imagePathError } = await supabase.from('bead_projects').update({ image_path: imagePath }).eq('id', project.id)
         if (imagePathError) throw imagePathError
       } catch (error) {
-        setSaveMessage(`图纸已保存，但缩略图失败：${error instanceof Error ? error.message : '未知错误'}`)
+        setSaveMessage(`用量已保存，但高清图纸上传失败：${error instanceof Error ? error.message : '未知错误'}`)
         await loadProjects()
         return
       }
@@ -346,7 +365,7 @@ function App() {
     {page === 'scan' && <>
       <section className="hero" id="top"><p className="eyebrow">拼豆库存小助手</p><h1>一张图纸，<br /><em>理清所有豆子。</em></h1><p className="hero-copy">读取图纸底部的用量清单，由你确认后保存。新图纸默认进入“打算拼”，不会立刻扣库存。</p></section>
       <section className="workspace" aria-labelledby="upload-title"><div className="section-heading"><div><span className="step">01</span><h2 id="upload-title">放入一张图纸</h2></div><p>JPG、PNG、截图均可</p></div>
-        {!imageUrl ? <button className="drop-zone" type="button" onClick={() => fileInput.current?.click()}><span className="upload-icon" aria-hidden="true">↑</span><strong>选择图纸图片</strong><span>从相册上传，或拖入这里</span><small>裁切清单将发送给 OpenAI；保存时同步压缩缩略图</small></button> : <div className="scanner">
+        {!imageUrl ? <button className="drop-zone" type="button" onClick={() => fileInput.current?.click()}><span className="upload-icon" aria-hidden="true">↑</span><strong>选择图纸图片</strong><span>从相册上传，或拖入这里</span><small>裁切清单将发送给 OpenAI；完整图纸保存后可直接打开</small></button> : <div className="scanner">
           <div className="image-summary"><div><span className="file-label">已选图纸</span><strong>{fileName}</strong></div><button className="text-button" type="button" onClick={() => fileInput.current?.click()}>换一张</button></div>
           {isCropping ? <>
             <div className="crop-instruction"><strong>圈出整块用量清单</strong><span>拖动选框，拉动边角调整大小，左右色号都要包进去。</span></div>
@@ -354,7 +373,7 @@ function App() {
             <button className="primary-button" type="button" onClick={() => void confirmCrop()}><span>确认清单范围</span><b>✓</b></button>
           </> : <>
             <div className="crop-preview">{cropUrl && <img src={cropUrl} alt="将被识别的用量清单区域" />}</div>
-            <div className="crop-ready"><span>AI 只接收上方裁切清单；保存时仍使用完整原图作为缩略图。</span><button className="text-button" type="button" onClick={() => setIsCropping(true)}>重新裁切</button></div>
+            <div className="crop-ready"><span>AI 只接收上方裁切清单；保存时会另存完整高清图纸。</span><button className="text-button" type="button" onClick={() => setIsCropping(true)}>重新裁切</button></div>
             <button className="primary-button" type="button" onClick={recognize} disabled={!cropUrl || progress.includes('正在')}><span>{progress.includes('正在') ? progress : '读取这块清单'}</span><b>→</b></button>
           </>}
         </div>}
@@ -397,8 +416,14 @@ function App() {
 
     {page === 'projects' && <section className="page-view">
       <div className="page-title"><div><p className="eyebrow">图纸与用量</p><h1>我的图纸</h1></div><div className="big-count">{projects.length}<small>张</small></div></div>
-      {!session ? <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} /> : projects.length === 0 ? <div className="empty-state"><BeadMark /><h2>还没有图纸</h2><p>识别并确认一张图纸后，它会出现在这里。</p><button type="button" onClick={() => setPage('scan')}>去识别第一张</button></div> : <div className="project-grid">{projects.map((project) => <article className="project-card" key={project.id}><div className="project-thumb">{project.thumbnailUrl ? <img src={project.thumbnailUrl} alt={`${project.name}缩略图`} /> : <div><BeadMark /><span>旧图纸无缩略图</span></div>}<span>{project.total ?? project.bead_project_items.reduce((value, item) => value + item.count, 0)} 颗</span></div><div className="project-body"><div className="project-heading"><div><small>{new Date(project.created_at).toLocaleDateString('zh-CN')}</small><h2>{project.name}</h2></div><select className={`status-select ${project.status}`} aria-label={`${project.name}状态`} value={project.status} onChange={(event) => void updateProjectStatus(project.id, event.target.value as ProjectStatus)}>{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div><div className="project-items">{project.bead_project_items.sort((a, b) => normalizeCode(a.code).localeCompare(normalizeCode(b.code), undefined, { numeric: true })).map((item) => <span key={item.code}><i style={{ background: MARD_COLOR_BY_CODE.get(normalizeCode(item.code))?.hex }}></i><b>{normalizeCode(item.code)}</b>{item.count}</span>)}</div><p className="status-note">{project.status === 'planned' ? '已计入 pending，尚未扣库存' : project.status === 'completed' ? '已从实际剩余库存中扣除' : '不参与库存与 pending 计算'}</p></div></article>)}</div>}
+      {!session ? <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} /> : projects.length === 0 ? <div className="empty-state"><BeadMark /><h2>还没有图纸</h2><p>识别并确认一张图纸后，它会出现在这里。</p><button type="button" onClick={() => setPage('scan')}>去识别第一张</button></div> : <div className="project-grid">{projects.map((project) => <article className="project-card" key={project.id}><button className="project-thumb" type="button" onClick={() => showProject(project)} disabled={!project.thumbnailUrl}>{project.thumbnailUrl ? <img src={project.thumbnailUrl} alt={`${project.name}缩略图`} /> : <div><BeadMark /><span>旧图纸无缩略图</span></div>}<span>{project.total ?? project.bead_project_items.reduce((value, item) => value + item.count, 0)} 颗</span></button><div className="project-body"><div className="project-heading"><div><small>{new Date(project.created_at).toLocaleDateString('zh-CN')}</small><h2>{project.name}</h2></div><select className={`status-select ${project.status}`} aria-label={`${project.name}状态`} value={project.status} onChange={(event) => void updateProjectStatus(project.id, event.target.value as ProjectStatus)}>{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div><div className="project-items">{project.bead_project_items.sort((a, b) => normalizeCode(a.code).localeCompare(normalizeCode(b.code), undefined, { numeric: true })).map((item) => <span key={item.code}><i style={{ background: MARD_COLOR_BY_CODE.get(normalizeCode(item.code))?.hex }}></i><b>{normalizeCode(item.code)}</b>{item.count}</span>)}</div>{project.thumbnailUrl && <button className="open-chart-button" type="button" onClick={() => showProject(project)}><span>打开图纸</span><b>↗</b></button>}<p className="status-note">{project.status === 'planned' ? '已计入 pending，尚未扣库存' : project.status === 'completed' ? '已从实际剩余库存中扣除' : '不参与库存与 pending 计算'}</p></div></article>)}</div>}
     </section>}
+
+    {openProject?.thumbnailUrl && <div className="chart-viewer" role="dialog" aria-modal="true" aria-label={`查看 ${openProject.name}`}>
+      <header className="viewer-header"><div><span>正在拼</span><strong>{openProject.name}</strong></div><button type="button" aria-label="关闭图纸" onClick={() => setOpenProject(null)}>×</button></header>
+      <div className="viewer-canvas"><img src={openProject.thumbnailUrl} alt={openProject.name} style={{ width: `${viewerZoom}%` }} /></div>
+      <footer className="viewer-toolbar"><button type="button" onClick={() => setViewerZoom((zoom) => Math.max(50, zoom - 25))}>−</button><button className="zoom-readout" type="button" onClick={() => setViewerZoom(100)}>{viewerZoom}%</button><button type="button" onClick={() => setViewerZoom((zoom) => Math.min(300, zoom + 25))}>＋</button><button className="fit-button" type="button" onClick={() => setViewerZoom(100)}>适应宽度</button></footer>
+    </div>}
   </main>
 }
 
