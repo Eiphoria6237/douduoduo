@@ -30,25 +30,12 @@ const STATUS_LABELS: Record<ProjectStatus, string> = {
 }
 
 const DEFAULT_CROP: PercentCrop = { unit: '%', x: 4, y: 68, width: 92, height: 28 }
+const DEFAULT_REPLENISHMENT_LINE = 500
+const HIGH_USE_COLORS = new Set(['H1', 'H2', 'H7'])
 const newLine = (): InventoryLine => ({ id: crypto.randomUUID(), code: '', count: '' })
 const normalizeCode = (value: string) => value.toUpperCase().replace(/\s/g, '').replace(/^([A-Z]+)0+(\d+)$/, '$1$2')
-
-function sortedInventoryCodes(inventory: InventoryRecord[], projects: SavedProject[]) {
-  const completed = new Map<string, number>()
-  const pending = new Map<string, number>()
-  projects.forEach((project) => project.bead_project_items.forEach((item) => {
-    const code = normalizeCode(item.code)
-    if (project.status === 'completed') completed.set(code, (completed.get(code) ?? 0) + item.count)
-    if (project.status === 'planned') pending.set(code, (pending.get(code) ?? 0) + item.count)
-  }))
-  return [...inventory].sort((a, b) => {
-    const aRemaining = a.quantity - (completed.get(a.code) ?? 0)
-    const bRemaining = b.quantity - (completed.get(b.code) ?? 0)
-    const aAfterPending = aRemaining - (pending.get(a.code) ?? 0)
-    const bAfterPending = bRemaining - (pending.get(b.code) ?? 0)
-    return aRemaining - bRemaining || aAfterPending - bAfterPending || a.code.localeCompare(b.code, undefined, { numeric: true })
-  }).map((item) => item.code)
-}
+const compareCodes = (first: string, second: string) => first.localeCompare(second, undefined, { numeric: true })
+const replenishmentLine = (code: string) => HIGH_USE_COLORS.has(code) ? 2000 : DEFAULT_REPLENISHMENT_LINE
 
 function BeadMark() {
   return <div className="bead-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
@@ -117,7 +104,6 @@ function App() {
   const [authMessage, setAuthMessage] = useState('')
   const [projects, setProjects] = useState<SavedProject[]>([])
   const [inventory, setInventory] = useState<InventoryRecord[]>([])
-  const [inventoryOrder, setInventoryOrder] = useState<string[]>([])
   const [inventorySearch, setInventorySearch] = useState('')
   const [cloudMessage, setCloudMessage] = useState('')
 
@@ -169,7 +155,6 @@ function App() {
     setCloudMessage('正在同步豆仓…')
     const [loadedProjects, loadedInventory] = await Promise.all([loadProjects(), loadInventory(activeSession.user.id)])
     if (loadedProjects && loadedInventory) {
-      setInventoryOrder(sortedInventoryCodes(loadedInventory, loadedProjects))
       setCloudMessage('')
     }
   }
@@ -321,12 +306,17 @@ function App() {
   const inventoryValues = inventory.map((item) => {
     const remaining = item.quantity - (completedUsage.get(item.code) ?? 0)
     const pending = pendingUsage.get(item.code) ?? 0
-    return { ...item, remaining, pending, afterPending: remaining - pending, color: MARD_COLOR_BY_CODE.get(item.code) }
-  })
-  const inventoryOrderIndex = new Map(inventoryOrder.map((code, index) => [code, index]))
-  const inventoryRows = inventoryValues
-    .filter((item) => item.code.includes(normalizeCode(inventorySearch)))
-    .sort((a, b) => (inventoryOrderIndex.get(a.code) ?? 0) - (inventoryOrderIndex.get(b.code) ?? 0))
+    const afterPending = remaining - pending
+    const line = replenishmentLine(item.code)
+    return { ...item, remaining, pending, afterPending, line, pickup: Math.max(0, line - afterPending), color: MARD_COLOR_BY_CODE.get(item.code) }
+  }).sort((first, second) => compareCodes(first.code, second.code))
+  const pickupItems = inventoryValues.filter((item) => item.afterPending < item.line)
+  const inventoryQuery = normalizeCode(inventorySearch)
+  const inventoryGroups = [...new Set(MARD_COLORS.map((color) => color.code[0]))].map((series) => ({
+    series,
+    items: inventoryValues.filter((item) => item.code.startsWith(series) && item.code.includes(inventoryQuery)),
+    palette: MARD_COLORS.filter((color) => color.code.startsWith(series)),
+  })).filter((group) => group.items.length > 0)
 
   return <main className="app-shell">
     <header className="site-header">
@@ -365,7 +355,36 @@ function App() {
 
     {page === 'inventory' && <section className="page-view">
       <div className="page-title"><div><p className="eyebrow">221 色标准豆仓</p><h1>我的豆仓</h1></div><div className="big-count">{inventory.length}<small>色</small></div></div>
-      {!session ? <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} /> : <><div className="inventory-legend"><span><i className="solid"></i>实际剩余</span><span><i className="outline"></i>扣除 pending 后</span></div><label className="search-box"><span>⌕</span><input value={inventorySearch} placeholder="搜索色号，例如 A17" onChange={(event) => setInventorySearch(event.target.value)} /></label><div className="stock-list">{inventoryRows.map((item) => <article className={`stock-row ${item.afterPending < 0 ? 'shortage' : ''}`} key={item.code}><span className="color-swatch" style={{ background: item.color?.hex }}></span><div className="stock-code"><strong>{item.code}</strong><small>{item.pending ? `pending ${item.pending}` : '暂无 pending'}</small></div><div className="stock-balance"><strong>{item.remaining}</strong><small>之后 {item.afterPending}</small></div><div className="stock-controls"><button type="button" onClick={() => void setInventoryQuantity(item.code, item.quantity - 1000)}>−1000</button><input aria-label={`${item.code}实际库存`} inputMode="numeric" value={item.remaining} onChange={(event) => void setInventoryQuantity(item.code, (Number(event.target.value.replace(/\D/g, '')) || 0) + (completedUsage.get(item.code) ?? 0))} /><button type="button" onClick={() => void setInventoryQuantity(item.code, item.quantity + 1000)}>+1000</button></div></article>)}</div></>}
+      {!session ? <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} /> : <>
+        <section className="pickup-panel" aria-labelledby="pickup-title">
+          <div className="pickup-heading"><div><span className="step">PICKUP</span><h2 id="pickup-title">补豆计划</h2></div><strong>{pickupItems.length}<small> 色待补</small></strong></div>
+          <p>只显示扣除 pending 后低于补充线的颜色。H1、H2、H7 补充线为 2000，其余为 500。</p>
+          {pickupItems.length ? <div className="pickup-grid">{pickupItems.map((item) => <article className="pickup-card" key={item.code}>
+            <span className="pickup-swatch" style={{ background: item.color?.hex }}></span>
+            <div><strong>{item.code}</strong><small>计划后 {item.afterPending}</small></div>
+            <div className="pickup-amount"><b>+{item.pickup}</b><small>补至 {item.line}</small></div>
+          </article>)}</div> : <div className="pickup-clear">所有颜色都在补充线以上。</div>}
+        </section>
+
+        <div className="inventory-browser">
+          <div className="inventory-browser-heading"><div><span className="step">ALL COLORS</span><h2>按系列查看</h2></div><span>点击系列展开库存</span></div>
+          <label className="search-box"><span>⌕</span><input value={inventorySearch} placeholder="搜索色号，例如 A17" onChange={(event) => setInventorySearch(event.target.value)} /></label>
+          <div className="color-series-list">{inventoryGroups.map((group) => <details className="color-series" key={group.series} open={inventoryQuery ? true : undefined}>
+            <summary>
+              <div className="series-cover" aria-hidden="true">{group.palette.map((color) => <i key={color.code} style={{ background: color.hex }}></i>)}</div>
+              <div className="series-title"><strong>{group.series} 系列</strong><span>{group.palette[0]?.code}–{group.palette.at(-1)?.code}</span></div>
+              <div className="series-meta"><b>{group.items.length}</b><small>色</small></div>
+              <span className="series-arrow">⌄</span>
+            </summary>
+            <div className="series-stock-grid">{group.items.map((item) => <article className={`color-stock-card ${item.afterPending < item.line ? 'below-line' : ''}`} key={item.code}>
+              <div className="stock-color-face" style={{ background: item.color?.hex }}><strong>{item.code}</strong>{item.afterPending < item.line && <span>待补 +{item.pickup}</span>}</div>
+              <div className="stock-numbers"><span><small>实际剩余</small><b>{item.remaining}</b></span><span><small>pending</small><b>{item.pending}</b></span><span><small>计划后</small><b>{item.afterPending}</b></span></div>
+              <div className="stock-controls"><button type="button" aria-label={`${item.code} 减少1000`} onClick={() => void setInventoryQuantity(item.code, item.quantity - 1000)}>−1000</button><input aria-label={`${item.code}实际库存`} inputMode="numeric" value={item.remaining} onChange={(event) => void setInventoryQuantity(item.code, (Number(event.target.value.replace(/\D/g, '')) || 0) + (completedUsage.get(item.code) ?? 0))} /><button type="button" aria-label={`${item.code} 增加1000`} onClick={() => void setInventoryQuantity(item.code, item.quantity + 1000)}>+1000</button></div>
+            </article>)}</div>
+          </details>)}</div>
+          {!inventoryGroups.length && <div className="pickup-clear">没有找到“{inventorySearch}”。</div>}
+        </div>
+      </>}
     </section>}
 
     {page === 'projects' && <section className="page-view">
