@@ -23,6 +23,7 @@ type SavedProject = {
 type InventoryRecord = { code: string; quantity: number }
 type Page = 'scan' | 'inventory' | 'projects'
 type RecognitionItem = { code: string; count: number }
+type InventoryAlert = { kind: 'shortage' | 'replenish'; codes: string[] }
 
 const STATUS_LABELS: Record<ProjectStatus, string> = {
   planned: '打算拼',
@@ -189,9 +190,11 @@ function App() {
   const [email, setEmail] = useState('')
   const [authMessage, setAuthMessage] = useState('')
   const [projects, setProjects] = useState<SavedProject[]>([])
-  const [showArchived, setShowArchived] = useState(false)
+  const [projectTab, setProjectTab] = useState<ProjectStatus>('planned')
   const [inventory, setInventory] = useState<InventoryRecord[]>([])
   const [inventorySearch, setInventorySearch] = useState('')
+  const [inventoryJumpCode, setInventoryJumpCode] = useState<string | null>(null)
+  const [inventoryAlert, setInventoryAlert] = useState<InventoryAlert | null>(null)
   const [cloudMessage, setCloudMessage] = useState('')
   const [openProject, setOpenProject] = useState<SavedProject | null>(null)
   const [viewerZoom, setViewerZoom] = useState(100)
@@ -261,6 +264,18 @@ function App() {
   }, [])
 
   useEffect(() => { if (session) void loadCloudData(session) }, [session])
+
+  useEffect(() => {
+    if (page !== 'inventory' || !inventoryJumpCode) return
+    const frame = requestAnimationFrame(() => {
+      const section = inventorySeries.current[inventoryJumpCode[0]]
+      if (!section) return
+      section.open = true
+      section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      setInventoryJumpCode(null)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [page, inventoryJumpCode])
 
   useEffect(() => {
     if (!openProject) return
@@ -412,6 +427,18 @@ function App() {
     })
     const items = [...merged].map(([code, count]) => ({ code, count }))
     if (!items.length) { setSaveMessage('至少补录一项色号和数量后才能保存。'); return }
+    const inventoryByCode = new Map(inventory.map((item) => [item.code, item.quantity]))
+    const shortageCodes: string[] = []
+    const replenishCodes: string[] = []
+    items.forEach((item) => {
+      const availableBeforeNewProject = (inventoryByCode.get(item.code) ?? 0) - (completedUsage.get(item.code) ?? 0) - (pendingUsage.get(item.code) ?? 0)
+      const afterNewProject = availableBeforeNewProject - item.count
+      if (afterNewProject < 0) shortageCodes.push(item.code)
+      else if (availableBeforeNewProject >= replenishmentLine(item.code) && afterNewProject < replenishmentLine(item.code)) replenishCodes.push(item.code)
+    })
+    const nextInventoryAlert: InventoryAlert | null = shortageCodes.length
+      ? { kind: 'shortage', codes: shortageCodes.sort(compareCodes) }
+      : replenishCodes.length ? { kind: 'replenish', codes: replenishCodes.sort(compareCodes) } : null
     setSaveMessage('正在保存用量和高清图纸…')
     const { data: project, error } = await supabase.from('bead_projects').insert({ user_id: session.user.id, name: projectName.trim() || '未命名图纸', total: total ? Number(total) : null, status: 'planned' }).select('id').single()
     if (error || !project) { setSaveMessage(`保存失败：${error?.message ?? '未知错误'}`); return }
@@ -430,13 +457,18 @@ function App() {
         const { error: imagePathError } = await supabase.from('bead_projects').update({ image_path: imagePath }).eq('id', project.id)
         if (imagePathError) throw imagePathError
       } catch (error) {
-        setSaveMessage(`用量已保存，但高清图纸上传失败：${error instanceof Error ? error.message : '未知错误'}`)
+        setCloudMessage(`图纸已保存，但高清图纸上传失败：${error instanceof Error ? error.message : '未知错误'}`)
         await loadProjects()
+        setInventoryAlert(nextInventoryAlert)
+        setProjectTab('planned')
+        setPage('projects')
         return
       }
     }
     setSaveMessage('已保存，状态默认为“打算拼”。')
     await loadProjects()
+    setInventoryAlert(nextInventoryAlert)
+    setProjectTab('planned')
     setPage('projects')
   }
 
@@ -485,6 +517,14 @@ function App() {
     })
   }
 
+  function openInventoryFromAlert() {
+    if (!inventoryAlert) return
+    setInventorySearch(inventoryAlert.codes[0])
+    setInventoryJumpCode(inventoryAlert.codes[0])
+    setInventoryAlert(null)
+    setPage('inventory')
+  }
+
   const sum = rows.reduce((value, row) => value + (Number(row.count) || 0), 0)
   const delta = total ? Number(total) - sum : 0
   const updateRow = (id: string, key: 'code' | 'count', value: string) => setRows((current) => current.map((row) => row.id === id ? { ...row, [key]: key === 'code' ? value.toUpperCase() : value.replace(/\D/g, '') } : row))
@@ -511,13 +551,10 @@ function App() {
     palette: MARD_COLORS.filter((color) => color.code.startsWith(series)),
   })).filter((group) => group.items.length > 0)
   const savedGroupNames = [...new Set(projects.map((project) => project.group_name?.trim()).filter((name): name is string => Boolean(name)))].sort((first, second) => first.localeCompare(second, 'zh-CN', { numeric: true }))
-  const archivedCount = projects.filter((project) => project.status === 'cancelled').length
-  const activeProjectCount = projects.length - archivedCount
-  const visibleProjects = showArchived ? projects : projects.filter((project) => project.status !== 'cancelled')
+  const visibleProjects = projects.filter((project) => project.status === projectTab)
   const projectGroups = [...savedGroupNames, ''].map((groupName) => ({
     name: groupName,
     projects: visibleProjects.filter((project) => (project.group_name?.trim() || '') === groupName),
-    progressProjects: projects.filter((project) => project.status !== 'cancelled' && (project.group_name?.trim() || '') === groupName),
   })).filter((group) => group.projects.length > 0)
 
   function renderProjectCard(project: SavedProject) {
@@ -542,6 +579,11 @@ function App() {
     </nav>
 
     {cloudMessage && <div className="cloud-message">{cloudMessage}</div>}
+    {page === 'projects' && inventoryAlert && <button className={`inventory-alert ${inventoryAlert.kind}`} type="button" onClick={openInventoryFromAlert}>
+      <span aria-hidden="true">{inventoryAlert.kind === 'shortage' ? '!' : '＋'}</span>
+      <strong>{inventoryAlert.codes.join('、')}{inventoryAlert.kind === 'shortage' ? '库存不够拼这张图哦' : '计划后不足，需补豆'}</strong>
+      <b>去豆仓 →</b>
+    </button>}
 
     {page === 'scan' && <>
       <section className="hero scan-hero" id="top"><h1>识别<em>图纸</em></h1></section>
@@ -596,9 +638,9 @@ function App() {
     </section>}
 
     {page === 'projects' && <section className="page-view">
-      <div className="page-title"><div><p className="eyebrow">图纸与用量</p><h1>我的图纸</h1></div><div className="big-count">{activeProjectCount}<small>张</small></div></div>
-      {session && projects.length > 0 && <div className="projects-toolbar"><button className={`archive-toggle ${showArchived ? 'showing' : ''}`} type="button" aria-pressed={showArchived} onClick={() => setShowArchived((visible) => !visible)}>{showArchived ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-5.5 9.5-5.5 9.5 5.5 9.5 5.5-3.5 5.5-9.5 5.5S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.7"/></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5c2.1 2.5 4.7 3.8 8 3.8s5.9-1.3 8-3.8M6.3 15.5l-1.5 2M10 16.8l-.4 2.4M14 16.8l.4 2.4M17.7 15.5l1.5 2"/></svg>}<span>{showArchived ? '隐藏归档' : `归档 ${archivedCount}`}</span></button></div>}
-      {!session ? <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} /> : projects.length === 0 ? <div className="empty-state"><BeadMark /><h2>还没有图纸</h2><p>识别并确认一张图纸后，它会出现在这里。</p><button type="button" onClick={() => setPage('scan')}>去识别第一张</button></div> : visibleProjects.length === 0 ? <div className="empty-state archived-empty"><BeadMark /><h2>没有进行中的图纸</h2><button type="button" onClick={() => setShowArchived(true)}>查看归档</button></div> : <div className="project-groups">{projectGroups.map((group) => { const completed = group.progressProjects.filter((project) => project.status === 'completed').length; const total = group.progressProjects.length; const progress = total ? Math.round(completed / total * 100) : 0; return <section className="project-group" key={group.name || '__ungrouped'}><div className="project-group-heading"><div><span>{group.name ? 'COLLECTION' : 'INBOX'}</span><h2>{group.name || '未分组'}</h2></div><div className={`group-progress ${total ? '' : 'archived-only'}`}><strong>{total ? completed : 0}<small>/{total}</small></strong><span><i style={{ width: `${progress}%` }}></i></span><b>{total ? `${progress}%` : '归档'}</b></div></div><div className="project-grid">{group.projects.map(renderProjectCard)}</div></section> })}</div>}
+      <div className="page-title"><div><p className="eyebrow">图纸与用量</p><h1>我的图纸</h1></div><div className="big-count">{projects.length}<small>张</small></div></div>
+      {session && <div className="project-tabs" role="tablist" aria-label="图纸状态">{(Object.entries(STATUS_LABELS) as [ProjectStatus, string][]).map(([status, label]) => <button className={projectTab === status ? `active ${status}` : status} type="button" role="tab" aria-selected={projectTab === status} key={status} onClick={() => setProjectTab(status)}><span>{label}</span><b>{projects.filter((project) => project.status === status).length}</b></button>)}</div>}
+      {!session ? <AuthPanel email={email} message={authMessage} onEmail={setEmail} onSend={() => void sendMagicLink()} /> : projects.length === 0 ? <div className="empty-state"><BeadMark /><h2>还没有图纸</h2><p>识别并确认一张图纸后，它会出现在这里。</p><button type="button" onClick={() => setPage('scan')}>去识别第一张</button></div> : visibleProjects.length === 0 ? <div className="empty-state status-empty"><BeadMark /><h2>“{STATUS_LABELS[projectTab]}”里还没有图纸</h2>{projectTab === 'planned' && <button type="button" onClick={() => setPage('scan')}>去识别图纸</button>}</div> : <div className="project-groups">{projectGroups.map((group) => <details className="project-group" key={group.name || '__ungrouped'} open><summary className="project-group-heading"><div><span>{group.name ? 'COLLECTION' : 'INBOX'}</span><h2>{group.name || '未分组'}</h2></div><div className="group-count"><b>{group.projects.length}</b><small>张</small><i aria-hidden="true">⌄</i></div></summary><div className="project-grid">{group.projects.map(renderProjectCard)}</div></details>)}</div>}
     </section>}
 
     {openProject?.thumbnailUrl && <div className="chart-viewer" role="dialog" aria-modal="true" aria-label={`查看 ${openProject.name}`}>
